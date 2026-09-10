@@ -1,0 +1,28 @@
+{
+	"name": "ihm-tracker",
+	"version": "0.8.0",
+	"description": "IHateMoney client for Obsidian: Belege anzeigen/bearbeiten, Auto-Kategorisierung, Statistiken, PDF/Excel-Export.",
+	"main": "main.js",
+	"type": "module",
+	"scripts": {
+		"dev": "node esbuild.config.mjs",
+		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+		"test": "vitest run",
+		"test:integration": "vitest run --config vitest.integration.config.ts",
+		"version": "node version-bump.mjs && git add manifest.json versions.json"
+	},
+	"keywords": [],
+	"license": "0-BSD",
+	"dependencies": {
+		"jspdf": "^2.5.2",
+		"jspdf-autotable": "^3.8.4",
+		"xlsx": "^0.18.5"
+	},
+	"devDependencies": {
+		"@types/node": "^22.15.17",
+		"esbuild": "0.25.5",
+		"obsidian": "latest",
+		"typescript": "^5.8.3",
+		"vitest": "^3.0.0"
+	}
+}

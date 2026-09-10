@@ -1,0 +1,267 @@
+diff --git a/ihatemoney/forms.py b/ihatemoney/forms.py
+index 7749a89..36df836 100644
+--- a/ihatemoney/forms.py
++++ b/ihatemoney/forms.py
+@@ -359,6 +359,28 @@ class ResetPasswordForm(FlaskForm):
+     submit = SubmitField(_("Reset password"))
+ 
+ 
++# Nextcloud Cospends fest verdrahtete globale Standardkategorien — gehalten
++# synchron mit obsidian-ihm-plugin/src/categorize/cospend-category-map.ts
++# (COSPEND_GLOBAL_CATEGORIES, dort mit Quellenangabe/Herleitung). Bewusst nur
++# diese 10 negativen IDs als Auswahl: kein eigener Categories-Endpoint in
++# diesem Patch (siehe server-patch/README.md), positive IDs bleiben für eine
++# künftige projekteigene Kategorienverwaltung reserviert.
++CATEGORYID_CHOICES = [
++    ("", _("Unclassified")),
++    (-1, "🛒 Grocery"),
++    (-2, "🎉 Bar/Party"),
++    (-3, "🏠 Rent"),
++    (-4, "🌩 Bill"),
++    (-5, "🚸 Excursion/Culture"),
++    (-6, "💚 Health"),
++    (-10, "🛍 Shopping"),
++    (-12, "🍴 Restaurant"),
++    (-13, "🛌 Accommodation"),
++    (-14, "🚌 Transport"),
++    (-15, "🎾 Sport"),
++]
++
++
+ class BillForm(FlaskForm):
+     date = DateField(_("When?"), validators=[DataRequired()], default=datetime.now)
+     what = StringField(_("What?"), validators=[DataRequired()])
+@@ -385,6 +407,20 @@ class BillForm(FlaskForm):
+         coerce=BillType,
+         default=BillType.EXPENSE,
+     )
++    # Feldname bewusst OHNE Unterstrich: muss exakt "categoryid" heißen, weil
++    # WTForms den POST/JSON-Formularschlüssel standardmäßig vom
++    # Python-Attributnamen ableitet — und "categoryid" ist der Schlüssel, den
++    # MoneyBuster für IHM-Projekte bereits sendet (siehe models.py-Kommentar
++    # bei Bill.category_id für die Herleitung). Auch über die JSON-API nutzbar
++    # (nimmt jeden Integer aus CATEGORYID_CHOICES an) UND als Dropdown im
++    # Web-UI-Formular (forms.html add_bill-Makro) — gleiches Feld, zwei Wege.
++    categoryid = SelectField(
++        _("Category"),
++        choices=CATEGORYID_CHOICES,
++        coerce=lambda v: int(v) if v not in (None, "") else None,
++        validators=[Optional()],
++        default="",
++    )
+     submit = SubmitField(_("Submit"))
+     submit2 = SubmitField(_("Submit and add a new one"))
+ 
+@@ -399,6 +435,7 @@ class BillForm(FlaskForm):
+             project_default_currency=project.default_currency,
+             what=self.what.data,
+             bill_type=self.bill_type.data,
++            category_id=self.categoryid.data,
+         )
+ 
+     def save(self, bill, project):
+@@ -410,6 +447,7 @@ class BillForm(FlaskForm):
+         bill.date = self.date.data
+         bill.owers = Person.query.get_by_ids(self.payed_for.data, project)
+         bill.original_currency = self.original_currency.data
++        bill.category_id = self.categoryid.data
+         bill.converted_amount = self.currency_helper.exchange_currency(
+             bill.amount, bill.original_currency, project.default_currency
+         )
+@@ -423,6 +461,7 @@ class BillForm(FlaskForm):
+         self.external_link.data = bill.external_link
+         self.original_currency.data = bill.original_currency
+         self.date.data = bill.date
++        self.categoryid.data = bill.category_id
+         self.payed_for.data = [int(ower.id) for ower in bill.owers]
+ 
+         self.original_currency.label = Label("original_currency", _("Currency"))
+diff --git a/ihatemoney/migrations/versions/a1c0bd2e3f77_add_bill_category_id.py b/ihatemoney/migrations/versions/a1c0bd2e3f77_add_bill_category_id.py
+new file mode 100644
+index 0000000..2ce54fa
+--- /dev/null
++++ b/ihatemoney/migrations/versions/a1c0bd2e3f77_add_bill_category_id.py
+@@ -0,0 +1,27 @@
++"""add bill category_id (obsidian-ihm-plugin server-patch)
++
++Revision ID: a1c0bd2e3f77
++Revises: c941aaca38c2
++Create Date: 2026-09-08 00:00:00.000000
++
++"""
++
++# revision identifiers, used by Alembic.
++revision = "a1c0bd2e3f77"
++down_revision = "c941aaca38c2"
++
++from alembic import op
++import sqlalchemy as sa
++
++
++def upgrade():
++    op.add_column("bill", sa.Column("category_id", sa.Integer(), nullable=True))
++    op.add_column(
++        "bill_version",
++        sa.Column("category_id", sa.Integer(), autoincrement=False, nullable=True),
++    )
++
++
++def downgrade():
++    op.drop_column("bill_version", "category_id")
++    op.drop_column("bill", "category_id")
+diff --git a/ihatemoney/models.py b/ihatemoney/models.py
+index b992064..12b8f7b 100644
+--- a/ihatemoney/models.py
++++ b/ihatemoney/models.py
+@@ -719,6 +719,20 @@ class Bill(db.Model):
+ 
+     archive = db.Column(db.Integer, db.ForeignKey("archive.id"))
+ 
++    # Kategorie-Feld — kein Upstream-Feature (siehe Issue #55), hier als
++    # NAS-Fork-Patch ergänzt. Integer statt Freitext, damit die Werte
++    # WIRE-KOMPATIBEL zu Nextcloud Cospend / MoneyBuster sind: negative IDs
++    # sind Cospends fest im Client verdrahtete globale Standardkategorien
++    # (-1 Grocery, -2 Bar/Party, -3 Rent, -4 Bill, -5 Excursion/Culture,
++    # -6 Health, -10 Shopping, -12 Restaurant, -13 Accommodation,
++    # -14 Transport, -15 Sport — siehe cospend-nc
++    # Migration Version000406Date20200426154317.php), MoneyBuster zeigt für
++    # diese IDs Icon+Name auch ohne einen Categories-Endpoint auf IHM-Seite.
++    # Positive IDs sind für künftige projekteigene Kategorien reserviert
++    # (kein Categories-Endpoint in diesem Patch — siehe
++    # obsidian-ihm-plugin/server-patch/README.md). NULL = unklassifiziert.
++    category_id = db.Column(db.Integer, nullable=True)
++
+     currency_helper = CurrencyConverter()
+ 
+     def __init__(
+@@ -732,6 +746,7 @@ class Bill(db.Model):
+         project_default_currency: str = "",
+         what: str = "",
+         bill_type: str = "Expense",
++        category_id: int = None,
+     ):
+         super().__init__()
+         self.amount = amount
+@@ -742,6 +757,7 @@ class Bill(db.Model):
+         self.payer_id = payer_id
+         self.what = what
+         self.bill_type = BillType(bill_type)
++        self.category_id = category_id
+         self.converted_amount = self.currency_helper.exchange_currency(
+             self.amount, self.original_currency, project_default_currency
+         )
+@@ -760,6 +776,12 @@ class Bill(db.Model):
+             "external_link": self.external_link,
+             "original_currency": self.original_currency,
+             "converted_amount": self.converted_amount,
++            # Feldname bewusst ohne Unterstrich ("categoryid" statt
++            # "category_id") — exakt der Wire-Name, den MoneyBusters
++            # VersatileProjectSyncClient beim Anlegen/Ändern von IHM-Bills
++            # bereits als Formularfeld sendet (`categoryid`/`paymentmodeid`,
++            # verifiziert gegen den MoneyBuster-Quellcode).
++            "categoryid": self.category_id,
+         }
+ 
+     def pay_each_default(self, amount):
+diff --git a/ihatemoney/templates/forms.html b/ihatemoney/templates/forms.html
+index e8e037c..555689b 100644
+--- a/ihatemoney/templates/forms.html
++++ b/ihatemoney/templates/forms.html
+@@ -186,6 +186,8 @@
+         </div>
+     </div>
+ 
++    {{ input(form.categoryid, inline=True, class="form-control custom-select") }}
++
+     <details class="mb-3">
+         <summary class="mb-2">{{ _("More options") }}</summary>
+         {% if g.project.default_currency != "XXX" %}
+diff --git a/ihatemoney/templates/list_bills.html b/ihatemoney/templates/list_bills.html
+index 3c047f0..209bbf5 100644
+--- a/ihatemoney/templates/list_bills.html
++++ b/ihatemoney/templates/list_bills.html
+@@ -68,6 +68,16 @@
+ {% endblock %}
+ 
+ {% block content %}
++    {# Icon+Name je categoryid — gehalten synchron mit forms.py CATEGORYID_CHOICES
++       bzw. obsidian-ihm-plugin/src/categorize/cospend-category-map.ts. Nur fürs
++       Anzeigen hier als Dict statt Python-Helper: kein Categories-Endpoint in
++       diesem Patch, siehe server-patch/README.md. #}
++    {% set COSPEND_CATEGORIES = {
++        -1: "🛒 Grocery", -2: "🎉 Bar/Party", -3: "🏠 Rent", -4: "🌩 Bill",
++        -5: "🚸 Excursion/Culture", -6: "💚 Health", -10: "🛍 Shopping",
++        -12: "🍴 Restaurant", -13: "🛌 Accommodation", -14: "🚌 Transport",
++        -15: "🎾 Sport",
++    } %}
+     <div id="bill-form" class="modal fade show" role="dialog">
+         <div class="modal-dialog" role="document">
+             <div class="modal-content">
+@@ -166,6 +176,7 @@
+                 <tr><th>{{ _("When?") }}
+                 </th><th>{{ _("Who paid?") }}
+                 </th><th>{{ _("For what?") }}
++                </th><th>{{ _("Category") }}
+                 </th><th>{{ _("For whom?") }}
+                 </th><th>{{ _("How much?") }}
+                 </th><th>{{ _("Actions") }}</th></tr>
+@@ -181,6 +192,7 @@
+                 </td>
+                 <td>{{ bill.payer }}</td>
+                 <td>{{ bill.what }}</td>
++                <td>{{ COSPEND_CATEGORIES.get(bill.category_id, "–") }}</td>
+                 <td>{% set owers_label = bill.get_owers_label(g.project.active_members) -%}
+                 {% if owers_label[0] == "everyone" -%}
+                 {{ _("Everyone") }}
+diff --git a/ihatemoney/tests/api_test.py b/ihatemoney/tests/api_test.py
+index 8310d37..91e8a78 100644
+--- a/ihatemoney/tests/api_test.py
++++ b/ihatemoney/tests/api_test.py
+@@ -454,6 +454,7 @@ class TestAPI(IhatemoneyTestCase):
+             "converted_amount": 25.0,
+             "original_currency": "XXX",
+             "external_link": "https://raclette.fr",
++            "categoryid": None,
+         }
+ 
+         got = json.loads(req.data.decode("utf-8"))
+@@ -515,6 +516,7 @@ class TestAPI(IhatemoneyTestCase):
+         expected = {
+             "what": "beer",
+             "payer_id": 2,
++            "categoryid": None,
+             "owers": [
+                 {"activated": True, "id": 1, "name": "zorglub", "weight": 1},
+                 {"activated": True, "id": 2, "name": "jeanne", "weight": 1},
+@@ -606,6 +608,7 @@ class TestAPI(IhatemoneyTestCase):
+                 "external_link": "",
+                 "original_currency": "XXX",
+                 "converted_amount": expected_amount,
++                "categoryid": None,
+             }
+ 
+             got = json.loads(req.data.decode("utf-8"))
+@@ -713,6 +716,7 @@ class TestAPI(IhatemoneyTestCase):
+             "converted_amount": 25.0,
+             "original_currency": "EUR",
+             "external_link": "https://raclette.fr",
++            "categoryid": None,
+         }
+ 
+         got = json.loads(req.data.decode("utf-8"))
+@@ -760,6 +764,7 @@ class TestAPI(IhatemoneyTestCase):
+             "converted_amount": expected_amount,
+             "original_currency": "CAD",
+             "external_link": "https://raclette.fr",
++            "categoryid": None,
+         }
+ 
+         got = json.loads(req.data.decode("utf-8"))
+@@ -919,6 +924,7 @@ class TestAPI(IhatemoneyTestCase):
+             "external_link": "",
+             "converted_amount": 25.0,
+             "original_currency": "XXX",
++            "categoryid": None,
+         }
+         got = json.loads(req.data.decode("utf-8"))
+         assert (

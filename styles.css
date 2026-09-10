@@ -1,0 +1,1005 @@
+/* IHM Tracker — nutzt Obsidian CSS-Variablen für Theme-Awareness (Light/Dark
+   automatisch korrekt, keine eigenen Farbwerte). */
+
+/* Eigene Scroll-Architektur statt "ganze View scrollt als ein Block"
+   (Nutzer-Feedback 2026-09-09): `.ihm-tracker-view` ist `contentEl` selbst
+   (Obsidians eigener `.view-content`, hat schon eine feste Höhe von der
+   Pane) — wird hier zur Flex-Spalte mit fester Höhe. Topbar ist dadurch ein
+   normales, nicht scrollendes Flex-Item OBERHALB des scrollenden Bereichs
+   (kein `position: sticky` nötig, echtes fixes Layout). `.ihm-tab-content`
+   ist der scrollende Bereich für Auswertung/schmale Belege-Ansicht; im
+   breiten Master-Detail-Layout übernehmen `.ihm-bills-list-pane`/
+   `.ihm-bills-detail-pane` je ihr eigenes unabhängiges Scrollen stattdessen
+   (Liste scrollt, Formular bleibt stehen), siehe dort. */
+.ihm-tracker-view {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+}
+
+/* `!important` + doppelte Klasse bewusst (Nutzer-Feedback 2026-09-10, Screenshot:
+   Leerraum oben blieb auch nach der ersten Runde sichtbar) — Obsidians eigene
+   `.view-content`-Regel könnte über einen Selektor mit höherer Spezifität
+   (Klasse+Nachfahre) kommen, ein einzelner Klassen-Selektor gewinnt dann NICHT
+   automatisch nur weil unser CSS später lädt. Wir übernehmen komplette
+   Kontrolle über die Innenabstände selbst (`.ihm-topbar`/`.ihm-tab-content`
+   haben schon eigenes Padding). WICHTIG: der '<'/'>'-Zeile darüber (Pane-Nav
+   + Obsidian-Sync-Statusicon + "…") ist Obsidians NATIVER `.view-header` —
+   ein anderes DOM-Element außerhalb von `contentEl`, das ein Plugin nicht
+   unterstützt/sicher verkleinern kann. Dieser Fix betrifft nur den Bereich
+   AB unserem eigenen Inhalt. */
+.view-content.ihm-tracker-view {
+	padding: 0 !important;
+}
+
+.ihm-tab-content {
+	position: relative;
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow-y: auto;
+	/* Abstand oben statt direkt an der Topbar-Kante (Nutzer-Feedback
+	   2026-09-09) — zusammen mit deren `box-shadow` oben der Ort, an dem
+	   Belege sichtbar "unter" die Leiste scrollen. */
+	padding: var(--size-4-3, 12px) var(--size-4-3, 12px);
+	/* Natives iOS-Momentum-Scrolling (Trägheit + Rubberband) statt der
+	   steiferen Default-Physik verschachtelter `overflow`-Container in
+	   WKWebView (Nutzer-Feedback 2026-09-09: "Scroll-Friction zu stark").
+	   Nicht-standardisiert, aber weiterhin nötig für diesen Effekt auf
+	   iOS/iPadOS; auf Desktop wirkungslos (dort ist Trackpad-Scroll in
+	   Electron/Chromium bereits nativ, keine Anpassung nötig). */
+	-webkit-overflow-scrolling: touch;
+}
+
+/* Options-Button (öffnet Sync/Export/Einstellungen), Projekt-Picker + Tabs +
+   Filter-Icon — steht als eigenes Flex-Item OBERHALB des scrollenden
+   `.ihm-tab-content` (siehe oben), bleibt dadurch ohne `position: sticky`
+   immer sichtbar. Bricht bei sehr schmaler Breite um (Nutzer-Feedback
+   2026-09-09: horizontales Scrollen war weniger klar als Umbrechen). */
+/* Bündelt Topbar + (falls ausgeklappt) Filter-Panel als EIN nicht-
+   scrollendes Element — Trennlinie/Schatten sitzen an dessen unterem Rand,
+   also unter dem Filter-Panel statt zwischen Tabs und Filter-Panel
+   (Nutzer-Feedback 2026-09-09). */
+.ihm-header {
+	display: flex;
+	flex-direction: column;
+	flex: 0 0 auto;
+	position: relative;
+	/* Über dem scrollenden Inhalt (der als späteres Geschwister-Element sonst
+	   den Schatten übermalen würde) — Belege sollen sichtbar "unter" die
+	   Leiste scrollen (Nutzer-Feedback 2026-09-09). */
+	z-index: 1;
+	border-bottom: 1px solid var(--background-modifier-border);
+	/* BEWUSST kein `var(--shadow-s, ...)` hier (Regression 2026-09-09 wieder
+	   entfernt): Obsidians `--shadow-s` ist ein umlaufender Ring-Schatten
+	   (für "schwebende" Flächen wie Cards/FAB gedacht, siehe dort), gebunden
+	   an dieses Element ergab er eine komplette Box um die Topbar statt nur
+	   einen Strich+Schatten nach unten. Gerichtete Divider-Schatten bleiben
+	   deshalb roh statt an einen generischen Elevation-Token gebunden — siehe
+	   `docs/ui-specs.md` §2. */
+	box-shadow: 0 4px 6px -4px rgba(0, 0, 0, 0.35);
+}
+
+.ihm-topbar {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-2, 8px);
+	padding: var(--size-4-2, 8px) var(--size-4-3, 12px);
+}
+
+/* Saldo-Leiste über der Belegliste (Nutzerwunsch, Screenshot 2026-09-10):
+   anders als `.ihm-header` (Trennstrich zum scrollenden Inhalt) ist das
+   hier eine abgesetzte "schwebende" Karte — `--shadow-s` passt hier (siehe
+   `docs/ui-specs.md` §2, Regel: nur für umlaufend gedachte Flächen binden).
+   Horizontal scrollbar statt Umbruch bei vielen Mitgliedern, sonst wächst
+   die Leiste unkontrolliert in der Höhe. Ganze Leiste EIN Klickziel
+   (`ihm-view.ts` `renderBalanceBar`), daher `cursor:pointer` aufs Ganze. */
+.ihm-balance-bar {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-4, 16px);
+	margin: 0 var(--size-4-3, 12px) var(--size-4-2, 8px);
+	padding: var(--size-4-2, 8px) var(--size-4-3, 12px);
+	background: var(--background-secondary);
+	border-radius: var(--radius-l, 12px);
+	box-shadow: var(--shadow-s, 0 1px 3px rgba(0, 0, 0, 0.3));
+	overflow-x: auto;
+	cursor: pointer;
+	-webkit-overflow-scrolling: touch;
+}
+
+.ihm-balance-item {
+	display: flex;
+	align-items: center;
+	gap: var(--size-2-1, 2px);
+	flex: 0 0 auto;
+	font-size: var(--font-ui-small);
+}
+
+/* Zeile 1: Projekt-Picker links, Filter+Options rechts — IMMER diese feste
+   Aufteilung, unabhängig von der Breite (Nutzer-Feedback 2026-09-09: freies
+   `flex-wrap` über alle drei Gruppen verteilte sich bei schmaler Breite auf
+   unvorhersehbar viele Zeilen und "sah komisch aus"). Zeile 2 (Tabs) bricht
+   bei Bedarf für sich allein um. */
+.ihm-topbar-row {
+	display: flex;
+	align-items: center;
+	gap: var(--size-2-3, 6px);
+}
+
+.ihm-topbar-tabs {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--size-2-3, 6px);
+}
+
+/* `margin-left:auto` auf der GRUPPE statt auf dem Options-Button allein,
+   sonst klebt das (nur auf dem Belege-Tab vorhandene) Filter-Icon mal neben
+   dem Projekt-Picker, mal am rechten Rand (Nutzer-Feedback 2026-09-09:
+   "Filter-Icon eher rechts alligned"). */
+.ihm-topbar-actions {
+	display: flex;
+	align-items: center;
+	gap: var(--size-2-3, 6px);
+	flex: 0 0 auto;
+	margin-left: auto;
+}
+
+.ihm-tab-chip {
+	flex: 0 0 auto;
+	background: var(--background-secondary);
+	border: none;
+	border-radius: 999px;
+	padding: var(--size-2-3, 6px) var(--size-4-4, 16px);
+	color: var(--text-muted);
+	box-shadow: none;
+	min-height: 32px;
+}
+
+.ihm-tab-chip.is-active {
+	background: var(--interactive-accent);
+	color: var(--text-on-accent);
+	font-weight: 600;
+}
+
+.ihm-icon-btn {
+	position: relative;
+	font-size: 15px;
+	padding: var(--size-4-1, 4px) var(--size-4-3, 12px);
+	line-height: 1;
+	/* Mindestgröße für Touch-Targets (Apple HIG/Material: ~44px) — vorher zu
+	   klein auf Mobile (Nutzer-Feedback 2026-09-09, Screenshots). */
+	min-width: 44px;
+	min-height: 40px;
+	/* Zentriert Lucide-Icons (setIcon() fügt ein Inline-SVG ein). */
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+}
+
+/* Farb-Punkt auf dem Filter-Icon wenn Kategorie-/Jahr-Filter aktiv ist
+   (Nutzer-Feedback 2026-09-09). */
+.ihm-filter-dot {
+	position: absolute;
+	top: 6px;
+	right: 6px;
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	background: var(--interactive-accent);
+}
+
+.ihm-filter-reset-btn {
+	grid-column: 1 / -1;
+	justify-self: start;
+	color: var(--text-error);
+	font-size: var(--font-ui-small);
+}
+
+.ihm-icon-btn.is-active {
+	background: var(--interactive-accent);
+	color: var(--text-on-accent);
+}
+
+/* Sync-Button-Feedback (Nutzerwunsch 2026-09-10) — ohne das war ein Klick
+   auf "Synchronisieren" bei einem Hintergrund-Refresh (schon Daten da, kein
+   volles "Lade…") optisch komplett wirkungslos, bis der Sync fertig war. */
+@keyframes ihm-spin {
+	to {
+		transform: rotate(360deg);
+	}
+}
+
+.ihm-icon-btn.is-syncing svg {
+	animation: ihm-spin 0.8s linear infinite;
+}
+
+.ihm-stats {
+	display: flex;
+	gap: var(--size-4-2, 8px);
+	margin-bottom: var(--size-4-3, 12px);
+}
+
+.ihm-stat-card {
+	background: var(--background-secondary);
+	border-radius: var(--radius-m, 8px);
+	padding: var(--size-4-2, 8px) var(--size-4-3, 12px);
+	white-space: pre-line;
+	font-weight: 600;
+	flex: 1;
+}
+
+.ihm-cat-bars {
+	margin-bottom: var(--size-4-4, 16px);
+}
+
+.ihm-cat-row {
+	display: grid;
+	grid-template-columns: 140px 1fr 80px;
+	align-items: center;
+	gap: var(--size-4-2, 8px);
+	margin-bottom: var(--size-4-1, 4px);
+	font-size: var(--font-ui-small);
+}
+
+.ihm-bar-track {
+	background: var(--background-modifier-border);
+	border-radius: var(--radius-s, 4px);
+	height: 8px;
+	overflow: hidden;
+}
+
+.ihm-bar-fill {
+	background: var(--interactive-accent);
+	height: 100%;
+	border-radius: var(--radius-s, 4px);
+}
+
+/* Filter/Sortierung/Gruppierung/Jahr — ausgeklappt über das Filter-Icon in
+   der oberen Tableiste (nur bei aktivem Belege-Tab sichtbar, siehe
+   ihm-view.ts `renderTopBar`), standardmäßig eingeklappt (Nutzer-Feedback
+   2026-09-09: sollen nicht permanent Platz wegnehmen). Grid statt Flex:
+   `auto-fit`+`minmax` legt so viele Spalten nebeneinander wie bei mindestens
+   150px Breite passen und bricht sauber um. */
+.ihm-filter-panel-body {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+	gap: var(--size-4-2, 8px);
+	/* Jetzt direktes Kind von `.ihm-header`, nicht mehr von `.ihm-topbar` —
+	   braucht sein eigenes horizontales Margin passend zu deren Padding. */
+	margin: 0 var(--size-4-3, 12px) var(--size-4-3, 12px);
+	padding: var(--size-4-2, 8px);
+	background: var(--background-secondary);
+	border-radius: var(--radius-m, 8px);
+}
+
+.ihm-filter-panel-body select {
+	min-width: 0;
+	width: 100%;
+}
+
+.ihm-bulk-bar {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-2, 8px);
+	margin-bottom: var(--size-4-2, 8px);
+	padding: var(--size-2-3, 6px) var(--size-4-3, 12px);
+	background: var(--background-secondary);
+	border-radius: var(--radius-m, 8px);
+	font-size: var(--font-ui-small);
+}
+
+.ihm-bulk-bar select {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+
+.ihm-bill-checkbox {
+	flex: 0 0 auto;
+	width: 20px;
+	height: 20px;
+}
+
+/* Floating-Action-Button statt "+ Neuer Beleg"-Button in der Toolbar
+   (Nutzer-Feedback 2026-09-09). `position: sticky` rutschte bei kurzer Liste
+   (wenig Belege) mit nach oben, weil das Element ohne genug Scroll-Distanz
+   nie den `bottom`-Offset erreicht (Nutzer-Feedback 2026-09-09, Screenshot).
+   Fix: `position: absolute` relativ zum Pane (`.ihm-tab-content`/
+   `.ihm-bills-list-pane`, beide jetzt `position: relative`) — bleibt IMMER
+   an derselben Stelle im Pane, unabhängig von der Content-Höhe, und (anders
+   als `fixed`) weiterhin auf diese View beschränkt statt relativ zum
+   gesamten Fenster (Obsidian-Panes). */
+.ihm-fab-row {
+	position: absolute;
+	right: 12px;
+	bottom: 12px;
+	display: flex;
+	pointer-events: none;
+}
+
+.ihm-fab {
+	pointer-events: auto;
+	width: 52px;
+	height: 52px;
+	border-radius: 50%;
+	font-size: 26px;
+	line-height: 1;
+	padding: 0;
+	box-shadow: var(--shadow-l, 0 4px 12px rgba(0, 0, 0, 0.3));
+	/* Immer noch zu stark sichtbar bei opacity:0.7 (Nutzer-Feedback 2026-09-09). */
+	opacity: 0.3;
+}
+
+.ihm-fab:hover {
+	opacity: 0.95;
+}
+
+/* Tablet/breiter Tab: Liste + Formular-Panel nebeneinander (Master-Detail,
+   Nutzerfrage 2026-09-09 "Tablet-Split") statt gestreckter Einzelspalte. */
+/* Höhe = genau der verfügbare Platz in `.ihm-tab-content` (100%, dessen
+   eigenes `overflow-y:auto` greift dadurch hier nie) — Liste und Formular
+   bekommen darin je ihr EIGENES Scrollen (siehe unten), unabhängig
+   voneinander, statt dass die ganze Seite als ein Block scrollt (Nutzer-
+   Feedback 2026-09-09). */
+.ihm-bills-split {
+	display: flex;
+	gap: var(--size-4-4, 16px);
+	height: 100%;
+}
+
+.ihm-bills-list-pane {
+	position: relative;
+	flex: 1 1 55%;
+	min-width: 0;
+	height: 100%;
+	overflow-y: auto;
+	-webkit-overflow-scrolling: touch;
+	/* Ohne Reserve legt sich die native Scrollbar über den rechten Rand der
+	   Karten (Nutzer-Feedback 2026-09-09, Screenshot Tablet-Split) —
+	   `.ihm-tab-content` hat das Problem nicht, weil dort schon
+	   `padding:12px` auf beiden Seiten sitzt. */
+	padding-right: var(--size-4-3, 12px);
+	scrollbar-gutter: stable;
+}
+
+/* Kein `position: sticky` mehr nötig — das Panel scrollt gar nicht erst mit,
+   weil es außerhalb des scrollenden Listen-Bereichs liegt (eigene Spalte,
+   eigenes `overflow-y`). `border-left` grenzt es zusätzlich sichtbar von der
+   Liste ab (Nutzer-Feedback 2026-09-09: beide Spalten liefen optisch
+   ineinander). */
+.ihm-bills-detail-pane {
+	flex: 1 1 45%;
+	min-width: 0;
+	height: 100%;
+	overflow-y: auto;
+	-webkit-overflow-scrolling: touch;
+	background: var(--background-secondary);
+	border-left: 2px solid var(--background-modifier-border);
+	border-radius: var(--radius-l, 12px);
+	padding: var(--size-4-3, 12px);
+}
+
+.ihm-bills-detail-empty {
+	padding: var(--size-4-6, 24px) var(--size-4-2, 8px);
+	text-align: center;
+}
+
+.ihm-form-back-row {
+	margin-bottom: var(--size-4-2, 8px);
+}
+
+.ihm-bill-list {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-2, 8px);
+	/* Reserve für den jetzt absolut positionierten FAB, sonst verdeckt er die
+	   letzte Karte am Scroll-Ende. */
+	padding-bottom: var(--size-4-16, 64px);
+}
+
+.ihm-bill-group-header {
+	display: flex;
+	justify-content: space-between;
+	padding: var(--size-4-3, 12px) var(--size-2-1, 2px) var(--size-4-1, 4px) var(--size-2-1, 2px);
+	font-size: var(--font-ui-small);
+	font-weight: 700;
+	color: var(--text-muted);
+	border-top: 1px solid var(--background-modifier-border);
+}
+
+.ihm-bill-group-header:first-child {
+	border-top: none;
+	padding-top: 0;
+}
+
+/* Kartenaufbau an haushub `_BillTile` angelehnt (kasse_screen.dart): Zeile 1
+   = Icon + Titel (fett) + Betrag (fett, klar abgesetzt) + Aktionen, Zeile 2
+   = kleingedruckte Meta-Infos + Kategorie-Chip. Reines Flexbox statt festem
+   Spalten-Grid — bricht bei jeder Breite sauber, ohne Sonderfall für schmal/
+   breit (vorher: 3-Spalten-Grid kollidierte auf Mobile, siehe Screenshots
+   2026-09-09). */
+.ihm-bill-card {
+	background: var(--background-secondary);
+	border-radius: var(--radius-l, 12px);
+	padding: var(--size-4-3, 12px) var(--size-4-3, 12px);
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-1, 4px);
+	/* Reiner `box-shadow` (letzte Runde) sah in der Belegliste im breiten
+	   Tablet-Layout "nicht sauber durchgezogen" aus (Nutzer-Feedback
+	   2026-09-09) — vermutlich Subpixel-/Antialiasing-Artefakte bei der
+	   schmaleren Spaltenbreite dort. Dünner, immer scharf gerenderter
+	   `border` sorgt für eine konsistente Linie in beiden Layouts, der
+	   Schatten bleibt zusätzlich fürs weichere Aussehen (statt nur hartem
+	   Rahmen wie vorher). */
+	border: 1px solid var(--background-modifier-border);
+	box-shadow: var(--shadow-s, 0 1px 3px rgba(0, 0, 0, 0.2));
+}
+
+.ihm-bill-row {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-2, 8px);
+	cursor: pointer;
+	/* Verhindert iOS-Textauswahl-Callout/Copy-Menü, das sonst mit unserem
+	   eigenen Longpress-Handling kollidiert (Nutzer-Feedback 2026-09-09:
+	   Mehrfachauswahl per Longpress statt eigenem Toggle-Button). */
+	user-select: none;
+	-webkit-touch-callout: none;
+}
+
+.ihm-bill-card.is-editing {
+	background: var(--background-modifier-hover);
+	outline: 2px solid var(--interactive-accent);
+	outline-offset: -2px;
+}
+
+.ihm-bill-icon {
+	flex: 0 0 auto;
+	width: 28px;
+	height: 28px;
+	border-radius: 50%;
+	background: var(--background-modifier-border);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 13px;
+}
+
+.ihm-bill-title {
+	flex: 1 1 auto;
+	min-width: 0;
+	font-weight: 600;
+	font-size: var(--font-ui-medium);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* Betrag bewusst fett+eigene Farbe statt gleicher Stil wie das Datum darunter
+   — vorher kaum unterscheidbar (Nutzer-Feedback 2026-09-09). */
+.ihm-bill-amount {
+	flex: 0 0 auto;
+	font-weight: 700;
+	color: var(--text-normal);
+	white-space: nowrap;
+}
+
+/* Zeile 2 (bezahlt von/für) + Zeile 3 (Datum) — 2 Unterzeilen statt 1
+   (Nutzer-Feedback 2026-09-09: mehr Platz, Datum nicht mehr im selben
+   Fließtext wie "bezahlt von"/"für" gequetscht). Beide unter dem Titel
+   eingerückt: Icon (28px) + Gap (8px). */
+.ihm-bill-meta-row {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-2, 8px);
+	padding-left: var(--size-4-9, 36px);
+}
+
+.ihm-bill-meta {
+	flex: 1 1 auto;
+	min-width: 0;
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.ihm-bill-date {
+	padding-left: var(--size-4-9, 36px);
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+}
+
+.ihm-cat-select {
+	flex: 0 0 auto;
+	max-width: 50%;
+	font-size: var(--font-ui-smaller);
+	padding: var(--size-2-1, 2px) var(--size-4-2, 8px);
+	border-radius: 999px;
+}
+
+.ihm-project-box {
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-m, 8px);
+	padding: var(--size-4-2, 8px) var(--size-4-3, 12px);
+	margin-bottom: var(--size-4-3, 12px);
+}
+
+.ihm-project-box summary {
+	cursor: pointer;
+	font-weight: 600;
+	font-size: var(--font-ui-medium);
+}
+
+.ihm-project-box[open] summary {
+	margin-bottom: var(--size-4-2, 8px);
+}
+
+/* ── Jahr-Filter + Tabs ─────────────────────────────────────────────────── */
+
+/* Jetzt Teil von `.ihm-header` (nicht-scrollend) statt der scrollenden
+   `.ihm-tab-content` — brauchen deshalb ihr eigenes horizontales Padding
+   (Nutzer-Feedback 2026-09-09: sollen beim Unter-Tab-Wechsel nicht mit dem
+   Slide-Übergang des Inhalts mitrutschen). */
+/* Top-Padding bewusst 0 (Regression-Fund 2026-09-10, siehe `docs/ui-specs.md`
+   §2 "Header-Kind-Abstand"): JEDES direkte Kind von `.ihm-header` nach der
+   Topbar soll an derselben Stelle beginnen — 8px unter der Topbar, allein
+   aus deren eigenem `padding-bottom`, ohne zusätzliches eigenes Top-Padding/
+   -Margin. `.ihm-balance-bar`/`.ihm-filter-panel-body` hielten sich schon
+   daran (`margin-top: 0`), Jahr-Filter/Subtabs hatten zusätzlich eigenes
+   `padding-top`, was den Abstand für die Auswertung sichtbar größer machte
+   als für die Belege-Saldo-Leiste (Nutzer-Feedback: "Spacing unterschiedlich"). */
+.ihm-year-filter {
+	padding: 0 var(--size-4-3, 12px) var(--size-4-1, 4px);
+}
+
+/* ── Auswertung: Unter-Tabs (2. Nav-Ebene, siehe ihm-view.ts renderStatsSubNav) ─ */
+
+.ihm-subtabs {
+	display: flex;
+	gap: var(--size-4-1, 4px);
+	flex-wrap: wrap;
+	padding: 0 var(--size-4-3, 12px) var(--size-4-2, 8px);
+}
+
+.ihm-subtab-btn {
+	background: var(--background-secondary);
+	border: none;
+	border-radius: 999px;
+	padding: var(--size-2-3, 6px) var(--size-4-3, 12px);
+	font-size: var(--font-ui-small);
+	color: var(--text-muted);
+	box-shadow: none;
+	min-height: 32px;
+}
+
+.ihm-subtab-btn.is-active {
+	background: var(--interactive-accent);
+	color: var(--text-on-accent);
+	font-weight: 600;
+}
+
+.ihm-tab-content h4 {
+	margin: var(--size-4-4, 16px) 0 var(--size-4-2, 8px) 0;
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+}
+
+.ihm-muted {
+	color: var(--text-muted);
+}
+
+/* ── Übersicht-Tab ──────────────────────────────────────────────────────── */
+
+.ihm-trend {
+	padding: var(--size-2-3, 6px) var(--size-4-3, 12px);
+	border-radius: var(--radius-m, 8px);
+	font-size: var(--font-ui-small);
+	margin-bottom: var(--size-4-2, 8px);
+	display: inline-block;
+}
+
+.ihm-trend-down {
+	background: rgba(80, 200, 120, 0.15);
+	color: var(--text-success, #4caf50);
+}
+
+.ihm-trend-up {
+	background: rgba(224, 80, 80, 0.15);
+	color: var(--text-error);
+}
+
+.ihm-top-bill-row {
+	display: grid;
+	grid-template-columns: 24px 1fr auto auto;
+	align-items: center;
+	gap: var(--size-4-2, 8px);
+	padding: var(--size-4-1, 4px) 0;
+	font-size: var(--font-ui-small);
+}
+
+.ihm-top-bill-title {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.ihm-top-bill-amount {
+	font-weight: 600;
+}
+
+/* ── Kategorien-Tab ─────────────────────────────────────────────────────── */
+
+.ihm-cat-block {
+	margin-bottom: var(--size-4-3, 12px);
+}
+
+.ihm-cat-count {
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	margin-top: var(--size-2-1, 2px);
+}
+
+/* ── Personen-Tab ───────────────────────────────────────────────────────── */
+
+.ihm-member-list {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-4, 16px);
+}
+
+.ihm-member-row {
+	display: flex;
+	gap: var(--size-4-3, 12px);
+	align-items: flex-start;
+}
+
+.ihm-avatar {
+	width: 28px;
+	height: 28px;
+	min-width: 28px;
+	border-radius: 50%;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	color: #fff;
+	font-weight: 600;
+	font-size: 12px;
+}
+
+/* Dichtere Kontexte (Tabellen-Header, Zusammenfassungs-Zeilen, Ausgleich,
+   Beleg-Formular-Chips) — kleiner als die große Personen-Tab-Liste
+   (Nutzer-Feedback 2026-09-09: Personen-Darstellung über alle Auswertung-
+   Tabs vereinheitlichen, siehe `stats-tabs.ts` `personBadge()`). */
+.ihm-avatar-sm {
+	width: 18px;
+	height: 18px;
+	min-width: 18px;
+	font-size: 9px;
+}
+
+.ihm-person-badge {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--size-2-3, 6px);
+}
+
+.ihm-member-body {
+	flex: 1;
+}
+
+.ihm-member-head {
+	display: flex;
+	justify-content: space-between;
+	font-weight: 600;
+	margin-bottom: var(--size-4-1, 4px);
+}
+
+.ihm-member-foot {
+	display: flex;
+	justify-content: space-between;
+	margin-top: var(--size-4-1, 4px);
+	font-size: var(--font-ui-small);
+}
+
+.ihm-net-gets {
+	color: var(--text-success, #4caf50);
+	font-weight: 600;
+}
+
+.ihm-net-owes {
+	color: var(--text-error);
+	font-weight: 600;
+}
+
+.ihm-net-even {
+	color: var(--text-muted);
+}
+
+.ihm-member-cat-block {
+	margin-bottom: var(--size-4-3, 12px);
+}
+
+.ihm-member-cat-name {
+	font-size: var(--font-ui-small);
+	font-weight: 600;
+	margin-bottom: var(--size-4-1, 4px);
+}
+
+.ihm-chip-row {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--size-2-3, 6px);
+}
+
+.ihm-chip {
+	background: var(--background-modifier-border);
+	border-radius: 999px;
+	padding: var(--size-2-1, 2px) var(--size-4-2, 8px);
+	font-size: var(--font-ui-smaller);
+}
+
+/* ── Vergleich-Tab (Pivot) ──────────────────────────────────────────────── */
+
+.ihm-pivot-year {
+	margin-bottom: var(--size-4-2, 8px);
+}
+
+.ihm-pivot-year summary {
+	display: flex;
+	justify-content: space-between;
+	cursor: pointer;
+	padding: var(--size-2-3, 6px) var(--size-4-1, 4px);
+	font-weight: 600;
+}
+
+.ihm-pivot-table-wrap {
+	overflow-x: auto;
+}
+
+.ihm-pivot-table {
+	width: 100%;
+	border-collapse: collapse;
+	font-size: var(--font-ui-small);
+}
+
+.ihm-pivot-table th,
+.ihm-pivot-table td {
+	padding: var(--size-4-1, 4px) var(--size-4-2, 8px);
+	text-align: right;
+	white-space: nowrap;
+}
+
+.ihm-pivot-table th:first-child,
+.ihm-pivot-table td:first-child {
+	text-align: left;
+}
+
+.ihm-pivot-cell-clickable {
+	cursor: pointer;
+	text-decoration: underline dotted;
+}
+
+.ihm-pivot-cell-clickable:hover {
+	background: var(--background-modifier-hover);
+}
+
+.ihm-pivot-total {
+	font-weight: 600;
+}
+
+.ihm-pivot-avg-row {
+	border-top: 1px solid var(--background-modifier-border);
+	color: var(--interactive-accent);
+	font-weight: 600;
+}
+
+.ihm-drilldown-row {
+	display: flex;
+	justify-content: space-between;
+	gap: var(--size-4-3, 12px);
+	padding: var(--size-4-1, 4px) 0;
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.ihm-drilldown-amount {
+	font-weight: 600;
+}
+
+/* ── Ausgleich-Tab (wer zahlt wem was, siehe stats-tabs.ts renderSettleTab) ── */
+
+.ihm-settle-list {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-2, 8px);
+}
+
+.ihm-settle-row {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-2, 8px);
+	background: var(--background-secondary);
+	border-radius: var(--radius-m, 8px);
+	padding: var(--size-4-3, 12px) var(--size-4-3, 12px);
+}
+
+.ihm-settle-arrow {
+	color: var(--text-muted);
+}
+
+.ihm-settle-amount {
+	margin-left: auto;
+	font-weight: 700;
+	color: var(--interactive-accent);
+}
+
+.ihm-settle-create-btn {
+	flex: 0 0 auto;
+	background: var(--interactive-accent);
+	color: var(--text-on-accent);
+	font-size: var(--font-ui-small);
+	padding: var(--size-4-1, 4px) var(--size-4-3, 12px);
+	min-height: 32px;
+}
+
+/* ── Beleg-Formular (bill-form.ts, inline statt Modal) ─────────────────── */
+
+.ihm-form-field {
+	margin-bottom: var(--size-4-4, 16px);
+}
+
+.ihm-form-label {
+	font-size: var(--font-ui-small);
+	color: var(--text-muted);
+	margin-bottom: var(--size-4-1, 4px);
+}
+
+/* Kein Label mehr darüber (Nutzer-Feedback 2026-09-09: "Titel wirkt
+   verloren/klein") — größer als vorher, damit es als optisch dominantes
+   erstes Feld erkennbar ist, ohne extra Beschriftung. */
+.ihm-form-title-input {
+	width: 100%;
+	font-size: 1.3em;
+	font-weight: 700;
+	border: none;
+	border-bottom: 1px solid var(--background-modifier-border);
+	background: transparent;
+	border-radius: 0;
+	padding: var(--size-4-1, 4px) 0 var(--size-4-2, 8px);
+}
+
+.ihm-form-title-input:focus {
+	border-bottom-color: var(--interactive-accent);
+	box-shadow: none;
+}
+
+/* Betrag + Datum nebeneinander (Nutzer-Feedback 2026-09-09) statt je eigener
+   voller Zeile. */
+.ihm-form-row {
+	display: flex;
+	gap: var(--size-4-3, 12px);
+	margin-bottom: var(--size-4-4, 16px);
+}
+
+.ihm-form-amount-field,
+.ihm-form-date-field {
+	flex: 1 1 0;
+	margin-bottom: 0;
+}
+
+.ihm-form-amount-input {
+	width: 100%;
+	font-size: var(--font-ui-larger, 1.4em);
+	font-weight: 700;
+}
+
+.ihm-form-date-field input {
+	width: 100%;
+}
+
+/* Bezahlt-von/Beteiligt als antippbare Chips statt Dropdown/Checkboxen
+   (Nutzer-Feedback 2026-09-09) — horizontal scrollbar statt umzubrechen,
+   damit auch bei vielen Mitgliedern nichts abgeschnitten wird. */
+/* Immer untereinander + alphabetisch (Sortierung siehe `bill-form.ts`
+   `sortedMembers`) statt horizontaler Scroll-Reihe (Nutzerwunsch 2026-09-09:
+   erst nur für den schmalen Tablet-Split gemacht, jetzt überall — auch im
+   schmalen/vollflächigen Formular las sich Horizontal-Scrollen schlechter
+   als eine klare Liste). */
+.ihm-form-chip-row {
+	display: flex;
+	flex-direction: column;
+	align-items: stretch;
+	gap: var(--size-4-2, 8px);
+}
+
+.ihm-form-chip {
+	display: flex;
+	align-items: center;
+	justify-content: flex-start;
+	gap: var(--size-2-3, 6px);
+	background: var(--background-secondary);
+	border: 2px solid transparent;
+	border-radius: 999px;
+	padding: var(--size-2-3, 6px) var(--size-4-4, 16px);
+	color: var(--text-muted);
+	box-shadow: none;
+	min-height: 36px;
+	/* Ohne Deckel zieht sich die Pill-Form im vollbreiten vertikalen Layout
+	   (Tablet-Detail-Panel) über die ganze Spaltenbreite — liest sich nicht
+	   mehr als Chip, sondern als gestreckter Balken (Nutzer-Feedback
+	   2026-09-09). Bewusster Rohwert, kein Obsidian-Spacing-Token (das ist
+	   für Abstände gedacht, nicht für Lesbarkeits-Breitenobergrenzen von
+	   Controls) — siehe `docs/ui-specs.md` §2 Ausnahmen. */
+	max-width: 420px;
+	/* Klick toggelt nur `.is-selected` auf demselben Knoten (kein Full-
+	   Re-Render, siehe bill-form.ts) — Transition wirkt daher tatsächlich
+	   (Nutzerwunsch 2026-09-09: "ganz leichter Übergang" bei Chip-Taps). */
+	transition: border-color 120ms ease, transform 100ms ease;
+}
+
+.ihm-form-chip.is-selected {
+	border-color: var(--interactive-accent);
+	color: var(--text-normal);
+	font-weight: 600;
+	transform: scale(1.03);
+}
+
+.ihm-form-chip-share {
+	margin-left: auto;
+	font-size: var(--font-ui-smaller);
+	color: var(--interactive-accent);
+}
+
+.ihm-modal-buttons {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: flex-end;
+	gap: var(--size-4-2, 8px);
+	margin-top: var(--size-4-3, 12px);
+}
+
+/* Löschen im Bearbeiten-Formular (bill-form.ts) sitzt links, Abbrechen/
+   Speichern rechts — dieselbe Zeile, `margin-right: auto` schiebt es an die
+   entgegengesetzte Seite des `flex-end`-Rests. Zweistufige Inline-
+   Bestätigung ("Wirklich löschen?" + Ja/Nein) statt Popup-Modal. */
+.ihm-form-delete-slot {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-2, 8px);
+	margin-right: auto;
+}
+
+.ihm-form-delete-confirm-label {
+	font-size: var(--font-ui-small);
+	color: var(--text-muted);
+}
+
+/* Kategorien-Verwaltung in den Plugin-Einstellungen (settings.ts
+   renderCategories) — Icon-Feld schmal statt gleich breit wie das
+   Namensfeld daneben. */
+.ihm-category-emoji-input {
+	max-width: 60px;
+	text-align: center;
+}
+
+/* Homescreen-Shortcut-URI in den Projekt-Settings (Nutzerwunsch 2026-09-10) —
+   lange obsidian://-URI muss umbrechen statt den Settings-Tab horizontal
+   scrollbar zu machen. */
+.ihm-shortcut-uri-row {
+	display: flex;
+	gap: var(--size-4-2, 8px);
+	align-items: flex-start;
+}
+
+.ihm-shortcut-uri-row code {
+	flex: 1 1 auto;
+	word-break: break-all;
+	background: var(--background-secondary);
+	padding: var(--size-4-1, 4px) var(--size-4-2, 8px);
+	border-radius: var(--radius-s, 4px);
+	font-size: var(--font-ui-smaller);
+}
+

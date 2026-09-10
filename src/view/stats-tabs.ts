@@ -1,0 +1,441 @@
+import { App, Modal } from 'obsidian';
+import { IhmBill, BillCategoryDef } from '../types';
+import { IhmMemberRaw } from '../ihm-api/client';
+import { byMonth, byCategory, memberStats, pivotByPersonMonth, categoryOf, computeShares, settleBalances, SettlementTransaction } from '../stats/aggregate';
+import { formatCurrency } from '../format';
+
+// Render-Funktionen für die 4 haushub-analogen Stats-Tabs (Übersicht/
+// Kategorien/Personen/Vergleich), portiert aus
+// haushalt_app/haushub/lib/screens/kasse/stats_screen.dart
+// (_OverviewTab/_CategoryTab/_MembersTab/_PivotTab). Reines DOM statt
+// Flutter-Widgets, gleiche Aggregations-Bausteine (stats/aggregate.ts) statt
+// der dortigen lokalen _byMonth/_byCategory/_memberStats-Helfer. Pure
+// Funktionen (root rein, kein State) — Interaktions-State (Pivot-Filter)
+// lebt im Aufrufer (view/ihm-view.ts), analog zum Rest der View.
+
+const MONTH_FULL_DE = [
+	'Januar', 'Februar', 'März', 'April', 'Mai', 'Juni',
+	'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember',
+];
+const MONTH_SHORT_DE = ['Jan', 'Feb', 'Mär', 'Apr', 'Mai', 'Jun', 'Jul', 'Aug', 'Sep', 'Okt', 'Nov', 'Dez'];
+
+function monthLabelFull(key: string): string {
+	const [y, m] = key.split('-');
+	return `${MONTH_FULL_DE[Number(m) - 1]} ${y}`;
+}
+
+/** Exportiert für Wiederverwendung in view/ihm-view.ts (Belegliste: Gruppieren nach Monat). */
+export function monthLabelShort(key: string): string {
+	const [y, m] = key.split('-');
+	return `${MONTH_SHORT_DE[Number(m) - 1]} ${y}`;
+}
+
+/** Exportiert für Wiederverwendung in view/ihm-view.ts (Belegliste: Gruppieren nach Kategorie). */
+export function categoryDef(id: string, categories: BillCategoryDef[]): BillCategoryDef {
+	return categories.find((c) => c.id === id) ?? { id, label: id, emoji: '📦', keywords: [] };
+}
+
+// Presentational-Palette fürs Personen-Tab (Avatar/Balken-Farbe) — IhmMemberRaw
+// hat anders als haushubs Member kein eigenes `color`-Feld, daher deterministisch
+// aus der Position in `members` (id-basiert statt Loop-Index, siehe
+// `memberColorFor` — Aufrufer iterieren teils sortiert/gefiltert, ein reiner
+// Loop-Index würde dann pro Tab eine andere Farbe für dieselbe Person geben).
+const MEMBER_PALETTE = ['#4c8bf5', '#f2994a', '#27ae9c', '#9b59b6', '#e74c3c', '#8d6e63', '#5c6bc0', '#ec407a'];
+
+/** Exportiert für Wiederverwendung in view/bill-form.ts (Personen-Chips,
+ * Nutzerwunsch 2026-09-09: Avatar-Farben auch im Beleg-Formular). */
+export function memberColorFor(members: { ihmId: number }[], ihmId: number): string {
+	const idx = members.findIndex((m) => m.ihmId === ihmId);
+	return MEMBER_PALETTE[Math.max(0, idx) % MEMBER_PALETTE.length]!;
+}
+
+/** Avatar+Name als eine Einheit — vereinheitlicht die bisher pro Auswertung-
+ * Unter-Tab unterschiedliche Personen-Darstellung (Nutzer-Feedback
+ * 2026-09-09: "UI von den Personen-Einträgen ... sehr unterschiedlich").
+ * `size`: `'md'` = Personen-Tab-Liste (eigene große Zeile), `'sm'` = alle
+ * dichteren Kontexte (Tabellen-Header, Zusammenfassungs-Zeilen, Ausgleich). */
+function personBadge(container: HTMLElement, name: string, color: string, size: 'md' | 'sm' = 'sm'): HTMLElement {
+	const badge = container.createSpan({ cls: 'ihm-person-badge' });
+	const avatar = badge.createSpan({
+		cls: size === 'md' ? 'ihm-avatar' : 'ihm-avatar ihm-avatar-sm',
+		text: name.charAt(0).toUpperCase(),
+	});
+	avatar.style.background = color;
+	badge.createSpan({ text: name });
+	return badge;
+}
+
+/** Exportiert für Wiederverwendung in view/ihm-view.ts (Saldo-Leiste über der
+ * Belegliste, Nutzerwunsch 2026-09-10). */
+export function netLabel(balance: number, currency: string): string {
+	if (Math.abs(balance) < 0.01) return 'ausgeglichen';
+	return balance > 0 ? `bekommt ${formatCurrency(balance, currency)}` : `schuldet ${formatCurrency(Math.abs(balance), currency)}`;
+}
+
+export function netClass(balance: number): string {
+	if (Math.abs(balance) < 0.01) return 'ihm-net ihm-net-even';
+	return balance > 0 ? 'ihm-net ihm-net-gets' : 'ihm-net ihm-net-owes';
+}
+
+// ── Tab: Übersicht ────────────────────────────────────────────────────────
+
+export function renderOverviewTab(root: HTMLElement, bills: IhmBill[], categories: BillCategoryDef[], currency: string): void {
+	if (bills.length === 0) {
+		root.createEl('p', { text: 'Keine Belege in diesem Zeitraum.' });
+		return;
+	}
+
+	const total = bills.reduce((s, b) => s + b.amount, 0);
+	const months = byMonth(bills);
+	const sortedMonths = [...months.keys()].sort().reverse();
+	const avgPerMonth = months.size > 0 ? total / months.size : 0;
+
+	const cards = root.createDiv({ cls: 'ihm-stats' });
+	cards.createDiv({ cls: 'ihm-stat-card', text: `Gesamt\n${formatCurrency(total, currency)}` });
+	cards.createDiv({ cls: 'ihm-stat-card', text: `Ø / Monat\n${formatCurrency(avgPerMonth, currency)}` });
+	cards.createDiv({ cls: 'ihm-stat-card', text: `Belege\n${bills.length}` });
+
+	if (sortedMonths.length >= 2) {
+		const cur = months.get(sortedMonths[0]!)!;
+		const prev = months.get(sortedMonths[1]!)!;
+		const diff = cur - prev;
+		const pct = prev > 0 ? (diff / prev) * 100 : 0;
+		const trend = root.createDiv({ cls: `ihm-trend ${diff <= 0 ? 'ihm-trend-down' : 'ihm-trend-up'}` });
+		trend.setText(`${diff >= 0 ? '+' : ''}${formatCurrency(diff, currency)} (${pct.toFixed(0)}%) ggü. Vormonat`);
+	}
+
+	root.createEl('h4', { text: 'Monatsverlauf (12 Monate)' });
+	const display = sortedMonths.slice(0, 12);
+	const maxVal = Math.max(0, ...display.map((k) => months.get(k)!));
+	const chart = root.createDiv({ cls: 'ihm-cat-bars' });
+	for (const key of display) {
+		const val = months.get(key)!;
+		const row = chart.createDiv({ cls: 'ihm-cat-row' });
+		row.createSpan({ text: monthLabelFull(key) });
+		const track = row.createDiv({ cls: 'ihm-bar-track' });
+		track.createDiv({ cls: 'ihm-bar-fill' }).style.width = `${maxVal > 0 ? (val / maxVal) * 100 : 0}%`;
+		row.createSpan({ text: formatCurrency(val, currency) });
+	}
+
+	root.createEl('h4', { text: 'Größte Belege' });
+	const topList = root.createDiv({ cls: 'ihm-bill-list' });
+	const top5 = [...bills].sort((a, b) => b.amount - a.amount).slice(0, 5);
+	for (const b of top5) {
+		const def = categoryDef(categoryOf(b), categories);
+		const row = topList.createDiv({ cls: 'ihm-top-bill-row' });
+		row.createSpan({ text: def.emoji });
+		row.createSpan({ text: b.what, cls: 'ihm-top-bill-title' });
+		row.createSpan({ text: b.date, cls: 'ihm-muted' });
+		row.createSpan({ text: formatCurrency(b.amount, currency), cls: 'ihm-top-bill-amount' });
+	}
+}
+
+// ── Tab: Kategorien ───────────────────────────────────────────────────────
+
+export function renderCategoriesTab(root: HTMLElement, bills: IhmBill[], categories: BillCategoryDef[], currency: string): void {
+	if (bills.length === 0) {
+		root.createEl('p', { text: 'Keine Belege in diesem Zeitraum.' });
+		return;
+	}
+	const totals = byCategory(bills);
+	const total = [...totals.values()].reduce((a, b) => a + b, 0);
+	const sorted = [...totals.entries()].sort((a, b) => b[1] - a[1]);
+
+	const list = root.createDiv({ cls: 'ihm-cat-bars' });
+	for (const [catId, val] of sorted) {
+		const def = categoryDef(catId, categories);
+		const fraction = total > 0 ? val / total : 0;
+		const count = bills.filter((b) => categoryOf(b) === catId).length;
+
+		const block = list.createDiv({ cls: 'ihm-cat-block' });
+		const head = block.createDiv({ cls: 'ihm-cat-row' });
+		head.createSpan({ text: `${def.emoji} ${def.label}` });
+		head.createSpan({ text: `${(fraction * 100).toFixed(0)}%  ${formatCurrency(val, currency)}` });
+		const track = block.createDiv({ cls: 'ihm-bar-track' });
+		track.createDiv({ cls: 'ihm-bar-fill' }).style.width = `${fraction * 100}%`;
+		block.createDiv({ cls: 'ihm-cat-count', text: `${count} Belege` });
+	}
+}
+
+// ── Tab: Personen ─────────────────────────────────────────────────────────
+
+export function renderMembersTab(root: HTMLElement, bills: IhmBill[], members: IhmMemberRaw[], categories: BillCategoryDef[], currency: string): void {
+	if (members.length === 0) {
+		root.createEl('p', { text: 'Keine Mitglieder.' });
+		return;
+	}
+	const stats = memberStats(bills, members);
+	const maxPaid = Math.max(0, ...stats.paid.values());
+
+	// Drei verschiedene Zahlen pro Person sahen ohne Erklärung leicht
+	// verwechselbar aus (Nutzer-Feedback 2026-09-09) — kurzer Erklärsatz statt
+	// stillschweigend "Bezahlt"/"Anteil"/Saldo nebeneinanderzustellen.
+	// Begriffe jetzt an die schon vorhandenen Klammer-Erklärungen im
+	// Vergleich-Tab angeglichen ("Ausgelegt (bezahlt)"/"Anteil (verursacht)").
+	root.createEl('p', {
+		cls: 'ihm-muted',
+		text: 'Bezahlt = tatsächlich ausgelegt · Anteil = fairer Anteil an allen Ausgaben · Saldo = Differenz (bekommt zurück/schuldet noch). Konkrete Ausgleichszahlungen siehe Tab „Ausgleich".',
+	});
+
+	root.createEl('h4', { text: 'Bezahlt (ausgelegt)' });
+	const list = root.createDiv({ cls: 'ihm-member-list' });
+	members.forEach((m) => {
+		const paid = stats.paid.get(m.ihmId) ?? 0;
+		const share = stats.share.get(m.ihmId) ?? 0;
+		const fraction = maxPaid > 0 ? paid / maxPaid : 0;
+		const color = memberColorFor(members, m.ihmId);
+
+		const row = list.createDiv({ cls: 'ihm-member-row' });
+		const avatar = row.createDiv({ cls: 'ihm-avatar', text: m.name.charAt(0).toUpperCase() });
+		avatar.style.background = color;
+		const body = row.createDiv({ cls: 'ihm-member-body' });
+		const head = body.createDiv({ cls: 'ihm-member-head' });
+		head.createSpan({ text: m.name });
+		head.createSpan({ text: formatCurrency(paid, currency), cls: 'ihm-member-paid' });
+		const track = body.createDiv({ cls: 'ihm-bar-track' });
+		const fill = track.createDiv({ cls: 'ihm-bar-fill' });
+		fill.style.width = `${fraction * 100}%`;
+		fill.style.background = color;
+		const foot = body.createDiv({ cls: 'ihm-member-foot' });
+		foot.createSpan({ text: `Anteil (verursacht): ${formatCurrency(share, currency)}`, cls: 'ihm-muted' });
+		foot.createSpan({ text: netLabel(m.balance, currency), cls: netClass(m.balance) });
+	});
+
+	if (bills.length > 0) {
+		root.createEl('hr');
+		root.createEl('h4', { text: 'Ausgaben pro Kategorie' });
+		for (const m of members) {
+			const memberBills = bills.filter((b) => b.payerIhmId === m.ihmId);
+			if (memberBills.length === 0) continue;
+			const catTotals = byCategory(memberBills);
+			const catTotal = [...catTotals.values()].reduce((a, b) => a + b, 0);
+			const top3 = [...catTotals.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3);
+
+			const block = root.createDiv({ cls: 'ihm-member-cat-block' });
+			personBadge(block.createDiv({ cls: 'ihm-member-cat-name' }), m.name, memberColorFor(members, m.ihmId));
+			const chips = block.createDiv({ cls: 'ihm-chip-row' });
+			for (const [catId, val] of top3) {
+				const def = categoryDef(catId, categories);
+				const pct = catTotal > 0 ? (val / catTotal) * 100 : 0;
+				chips.createEl('span', { cls: 'ihm-chip', text: `${def.emoji} ${def.label} ${pct.toFixed(0)}%` });
+			}
+		}
+	}
+}
+
+// ── Tab: Vergleich (Pivot Person × Monat) ────────────────────────────────
+
+export interface PivotState {
+	categoryFilter: string | null;
+	metric: 'share' | 'paid';
+}
+
+export function renderPivotTab(
+	root: HTMLElement,
+	app: App,
+	bills: IhmBill[],
+	members: IhmMemberRaw[],
+	categories: BillCategoryDef[],
+	state: PivotState,
+	onStateChange: (next: PivotState) => void,
+	currency: string,
+): void {
+	const weightOf = (id: number) => members.find((m) => m.ihmId === id)?.weight ?? 1;
+	const filtered = state.categoryFilter ? bills.filter((b) => categoryOf(b) === state.categoryFilter) : bills;
+
+	const controls = root.createDiv({ cls: 'ihm-filters' });
+	const catSelect = controls.createEl('select');
+	catSelect.createEl('option', { text: 'Alle Kategorien', value: '' });
+	for (const c of categories) catSelect.createEl('option', { text: `${c.emoji} ${c.label}`, value: c.id });
+	catSelect.value = state.categoryFilter ?? '';
+	catSelect.onchange = () => onStateChange({ ...state, categoryFilter: catSelect.value || null });
+
+	const metricSelect = controls.createEl('select');
+	metricSelect.createEl('option', { text: 'Anteil (verursacht)', value: 'share' });
+	metricSelect.createEl('option', { text: 'Ausgelegt (bezahlt)', value: 'paid' });
+	metricSelect.value = state.metric;
+	metricSelect.onchange = () => onStateChange({ ...state, metric: metricSelect.value as 'share' | 'paid' });
+
+	if (filtered.length === 0) {
+		root.createEl('p', { text: 'Keine Belege für diese Auswahl.' });
+		return;
+	}
+
+	const pivot = pivotByPersonMonth(filtered, members, { metric: state.metric });
+	const monthKeys = [...pivot.keys()].sort();
+	const monthCount = Math.max(1, monthKeys.length);
+
+	const memberTotals = new Map<number, number>();
+	for (const m of members) {
+		let sum = 0;
+		for (const key of monthKeys) sum += pivot.get(key)?.get(m.ihmId) ?? 0;
+		memberTotals.set(m.ihmId, sum);
+	}
+	const maxTotal = Math.max(0, ...memberTotals.values());
+	const sortedMembers = [...members].sort((a, b) => (memberTotals.get(b.ihmId) ?? 0) - (memberTotals.get(a.ihmId) ?? 0));
+
+	root.createEl('h4', { text: state.metric === 'share' ? 'Anteil pro Person' : 'Ausgelegt pro Person' });
+	const summary = root.createDiv({ cls: 'ihm-cat-bars' });
+	for (const m of sortedMembers) {
+		const totalForMember = memberTotals.get(m.ihmId) ?? 0;
+		const avg = totalForMember / monthCount;
+		const fraction = maxTotal > 0 ? totalForMember / maxTotal : 0;
+		const row = summary.createDiv({ cls: 'ihm-cat-row' });
+		personBadge(row, m.name, memberColorFor(members, m.ihmId));
+		const track = row.createDiv({ cls: 'ihm-bar-track' });
+		track.createDiv({ cls: 'ihm-bar-fill' }).style.width = `${fraction * 100}%`;
+		row.createSpan({ text: `${formatCurrency(totalForMember, currency)} · Ø ${formatCurrency(avg, currency)}/Mt` });
+	}
+
+	// Bills nach Monat gruppiert — Grundlage für den Drilldown-Klick auf eine Zelle.
+	const billsByMonth = new Map<string, IhmBill[]>();
+	for (const b of filtered) {
+		const key = b.date.slice(0, 7);
+		if (!billsByMonth.has(key)) billsByMonth.set(key, []);
+		billsByMonth.get(key)!.push(b);
+	}
+
+	const years = new Map<string, string[]>();
+	for (const key of monthKeys) {
+		const year = key.slice(0, 4);
+		if (!years.has(year)) years.set(year, []);
+		years.get(year)!.push(key);
+	}
+	const yearKeys = [...years.keys()].sort().reverse();
+	const latestYear = yearKeys[0];
+
+	for (const year of yearKeys) {
+		const yearMonthKeys = [...years.get(year)!].sort().reverse();
+		const yearTotal = yearMonthKeys.reduce((s, k) => s + [...(pivot.get(k)?.values() ?? [])].reduce((a, b) => a + b, 0), 0);
+
+		const details = root.createEl('details', { cls: 'ihm-pivot-year' });
+		if (year === latestYear) details.setAttr('open', 'true');
+		const summaryEl = details.createEl('summary');
+		summaryEl.createSpan({ text: year });
+		summaryEl.createSpan({ text: formatCurrency(yearTotal, currency), cls: 'ihm-muted' });
+
+		const tableWrap = details.createDiv({ cls: 'ihm-pivot-table-wrap' });
+		const table = tableWrap.createEl('table', { cls: 'ihm-pivot-table' });
+		const headRow = table.createEl('thead').createEl('tr');
+		headRow.createEl('th', { text: 'Monat' });
+		for (const m of members) personBadge(headRow.createEl('th'), m.name, memberColorFor(members, m.ihmId));
+		headRow.createEl('th', { text: 'Σ' });
+
+		const tbody = table.createEl('tbody');
+		for (const monthKey of yearMonthKeys) {
+			const row = pivot.get(monthKey) ?? new Map<number, number>();
+			const rowTotal = [...row.values()].reduce((a, b) => a + b, 0);
+			const tr = tbody.createEl('tr');
+			tr.createEl('td', { text: monthLabelShort(monthKey), cls: 'ihm-muted' });
+			for (const m of members) {
+				const value = row.get(m.ihmId) ?? 0;
+				const td = tr.createEl('td', { text: value === 0 ? '–' : value.toFixed(2) });
+				if (value !== 0) {
+					td.addClass('ihm-pivot-cell-clickable');
+					const clickedMonth = monthKey;
+					td.onclick = () => showDrillDown(app, m.name, monthLabelShort(clickedMonth), billsByMonth.get(clickedMonth) ?? [], m.ihmId, state.metric, weightOf, currency);
+				}
+			}
+			tr.createEl('td', { text: rowTotal.toFixed(2), cls: 'ihm-pivot-total' });
+		}
+
+		const avgRow = tbody.createEl('tr', { cls: 'ihm-pivot-avg-row' });
+		avgRow.createEl('td', { text: 'Ø / Monat' });
+		for (const m of members) {
+			let memberYearTotal = 0;
+			for (const key of yearMonthKeys) memberYearTotal += pivot.get(key)?.get(m.ihmId) ?? 0;
+			const avg = memberYearTotal / yearMonthKeys.length;
+			avgRow.createEl('td', { text: avg === 0 ? '–' : avg.toFixed(2) });
+		}
+		avgRow.createEl('td', { text: (yearTotal / yearMonthKeys.length).toFixed(2) });
+	}
+}
+
+function showDrillDown(
+	app: App,
+	memberName: string,
+	monthLabel: string,
+	monthBills: IhmBill[],
+	memberId: number,
+	metric: 'share' | 'paid',
+	weightOf: (id: number) => number,
+	currency: string,
+): void {
+	const rows = monthBills
+		.map((bill) => {
+			const value = metric === 'paid' ? (bill.payerIhmId === memberId ? bill.amount : 0) : (computeShares(bill, weightOf).get(memberId) ?? 0);
+			return { bill, value };
+		})
+		.filter((r) => r.value > 0);
+	new PivotDrillDownModal(app, `${memberName} · ${monthLabel}`, rows, currency).open();
+}
+
+class PivotDrillDownModal extends Modal {
+	constructor(
+		app: App,
+		private title: string,
+		private rows: { bill: IhmBill; value: number }[],
+		private currency: string,
+	) {
+		super(app);
+	}
+
+	onOpen(): void {
+		const { contentEl } = this;
+		contentEl.createEl('h3', { text: this.title });
+		for (const { bill, value } of this.rows) {
+			const row = contentEl.createDiv({ cls: 'ihm-drilldown-row' });
+			row.createSpan({ text: bill.what });
+			row.createSpan({ text: bill.date, cls: 'ihm-muted' });
+			row.createSpan({ text: formatCurrency(value, this.currency), cls: 'ihm-drilldown-amount' });
+		}
+		if (this.rows.length === 0) contentEl.createEl('p', { text: 'Keine Belege.' });
+	}
+
+	onClose(): void {
+		this.contentEl.empty();
+	}
+}
+
+// ── Tab: Ausgleich (wer zahlt wem was) ───────────────────────────────────
+
+/** Zeigt den Ausgleichsplan (`settleBalances`, siehe stats/aggregate.ts) —
+ * arbeitet bewusst auf den ROHEN `IhmMemberRaw.balance`-Werten (IHMs eigene,
+ * serverseitig gepflegte Salden), NICHT auf gefilterten `bills` wie die
+ * anderen Stats-Tabs: ein Saldo ist ein aktueller Gesamtstand, "Ausgleich
+ * nur für 2026" würde keinen Sinn ergeben — Jahr-/Kategorie-Filter wirken
+ * hier deshalb bewusst NICHT (analog dem Netto-Saldo im Personen-Tab, der
+ * ebenfalls direkt aus `balance` kommt statt aus gefilterten Bills). */
+export function renderSettleTab(
+	root: HTMLElement,
+	members: IhmMemberRaw[],
+	onSettle: (tx: SettlementTransaction) => void,
+	currency: string,
+): void {
+	root.createEl('p', {
+		cls: 'ihm-muted',
+		text: 'Wer an wen zahlen müsste, damit alle Konten ausgeglichen sind — unabhängig vom Jahr-Filter, da ein aktueller Gesamtstand.',
+	});
+
+	const transactions = settleBalances(members);
+	if (transactions.length === 0) {
+		root.createEl('p', { text: '✓ Alle Konten sind bereits ausgeglichen.' });
+		return;
+	}
+
+	const nameOf = (id: number) => members.find((m) => m.ihmId === id)?.name ?? '?';
+	const list = root.createDiv({ cls: 'ihm-settle-list' });
+	for (const tx of transactions) {
+		const row = list.createDiv({ cls: 'ihm-settle-row' });
+		personBadge(row, nameOf(tx.fromIhmId), memberColorFor(members, tx.fromIhmId));
+		row.createSpan({ cls: 'ihm-settle-arrow', text: '→' });
+		personBadge(row, nameOf(tx.toIhmId), memberColorFor(members, tx.toIhmId));
+		row.createSpan({ cls: 'ihm-settle-amount', text: formatCurrency(tx.amount, currency) });
+		// Legt direkt einen Reimbursement-Beleg an (Nutzerwunsch 2026-09-09:
+		// "direkt aus den vorgeschlagenen Ausgleichszahlungen einen neuen
+		// Eintrag generieren") — kein Formular dazwischen, der Vorschlag IST
+		// schon die vollständige Buchung (von/an/Betrag).
+		const btn = row.createEl('button', { cls: 'ihm-settle-create-btn', text: 'Anlegen' });
+		btn.onclick = () => onSettle(tx);
+	}
+}
