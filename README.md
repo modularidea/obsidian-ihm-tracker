@@ -11,6 +11,9 @@ matching, trainable), and stores the category mapping as a plain JSON file insid
 which means it syncs across your devices for free, using whatever sync you already use for
 Obsidian (Obsidian Sync, iCloud, Syncthing, Git, ...). No account, no extra server.
 
+> **Beta.** Expect bugs. Please report them via [GitHub Issues](../../issues). Provided as-is,
+> without warranty or liability.
+
 ## Features
 
 - **Bills** — list, create, edit, delete bills against any IHateMoney project (or a
