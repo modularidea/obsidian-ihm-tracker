@@ -1,12 +1,6 @@
-/**
- * Test-only Ersatz für das 'obsidian'-Paket (liefert nur Typen, keine
- * Runtime — main ist ""). Deckt aktuell nur `requestUrl()` ab, weil nur
- * obsidian-freie Module (categorize/, stats/) Tests haben — siehe
- * docs/todos.md Phase 1 "Vitest-Setup für sync/category-store.ts-Merge":
- * sobald dafür Tests entstehen, hier App/TFile/normalizePath-Stubs ergänzen,
- * nicht vorab spekulativ bauen. Aliased in vitest.config.ts, nie gebundelt
- * (esbuild.config.mjs markiert 'obsidian' wie üblich als external).
- */
+// Test-only stand-in for the 'obsidian' package (types only, no runtime).
+// Covers just `requestUrl()` — only Obsidian-free modules have unit tests.
+// Aliased in vitest.config.ts, never bundled.
 export interface RequestUrlParam {
 	url: string;
 	method?: string;
@@ -41,12 +35,9 @@ export async function requestUrl(request: RequestUrlParam | string): Promise<Req
 	const headers: Record<string, string> = {};
 	res.headers.forEach((value, key) => (headers[key] = value));
 
-	if (!res.ok && shouldThrow) {
-		throw new Error(`Request failed, status ${res.status}`);
-	}
+	if (!res.ok && shouldThrow) throw new Error(`Request failed, status ${res.status}`);
 
-	const decoder = new TextDecoder('utf-8');
-	const text = decoder.decode(arrayBuffer);
+	const text = new TextDecoder('utf-8').decode(arrayBuffer);
 	let json: unknown;
 	try {
 		json = JSON.parse(text);

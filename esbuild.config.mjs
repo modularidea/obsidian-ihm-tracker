@@ -14,19 +14,14 @@ const prod = process.argv[2] === 'production';
 
 const jspdfEsPath = fileURLToPath(new URL('./node_modules/jspdf/dist/jspdf.es.js', import.meta.url));
 
-// jsPDF bundelt drei nie von uns aufgerufene `output(...)`-Varianten
-// (`pdfobjectnewwindow`/`pdfjsnewwindow`/`dataurlnewwindow`), die ein neues
-// Fenster oeffnen und dort per `createElement('script'/'iframe')` +
-// `appendChild` Inhalte injizieren (u.a. ein externes CDN-Script). Wir rufen
-// nur `output('arraybuffer')` auf (siehe export/pdf-export.ts) — der Code ist
-// totes Gewicht, aber esbuild kann ihn nicht wegtreeshaken (dynamischer
-// String-`switch`), und der Obsidian-Store-Review flaggt dynamische
-// Script-Element-Erstellung im Bundle als Error, unabhaengig davon ob der
-// Pfad je erreicht wird. Fix: vor dem Bundling die drei toten Cases aus dem
-// unminifizierten ESM-Quellfile herausschneiden (`alias` erzwingt genau
-// diese Datei statt der von esbuilds Default-Resolution gewaehlten
-// `.min.js`) — bricht hart, falls ein jsPDF-Update das Pattern aendert,
-// damit das nie unbemerkt wieder reinrutscht.
+// jsPDF ships three `output(...)` variants we never call
+// (`pdfobjectnewwindow`/`pdfjsnewwindow`/`dataurlnewwindow`) that open a
+// window and inject a <script>/<iframe> (incl. an external CDN script).
+// esbuild cannot tree-shake them (dynamic string switch) and the Obsidian
+// plugin review flags runtime script creation regardless of reachability.
+// So the dead cases are cut out of the unminified ESM source before bundling
+// (`alias` forces that file). Throws if a jsPDF update changes the pattern,
+// so the injection never sneaks back in unnoticed.
 const stripDeadWindowCasesPlugin = {
 	name: 'strip-jspdf-dead-window-cases',
 	setup(build) {
@@ -35,7 +30,7 @@ const stripDeadWindowCasesPlugin = {
 			const patched = original.replace(/case "pdfobjectnewwindow":[\s\S]*?(?=case "datauri":)/, '');
 			if (patched === original) {
 				throw new Error(
-					`strip-jspdf-dead-window-cases: Pattern nicht gefunden in ${path} — jsPDF-Update? Pattern in esbuild.config.mjs nachziehen, sonst landet die entfernte Script-Injection ungeprueft wieder im Bundle.`,
+					`strip-jspdf-dead-window-cases: pattern not found in ${path} — jsPDF update? Adjust the pattern in esbuild.config.mjs, otherwise the script injection ends up in the bundle again.`,
 				);
 			}
 			return { contents: patched, loader: 'js' };
@@ -43,11 +38,8 @@ const stripDeadWindowCasesPlugin = {
 	},
 };
 
-// jspdf-autotable/xlsx werden NICHT in `external` gelistet -> esbuild
-// bundlet sie voll in main.js. Beide sind reines JS (keine Node-only APIs),
-// laufen daher unveraendert auch auf iOS/Android (siehe manifest.json
-// isDesktopOnly:false). jspdf selbst ebenfalls gebundelt, aber ueber den
-// Alias oben auf die gepatchte Quelldatei umgeleitet.
+// jspdf, jspdf-autotable and xlsx are bundled (pure JS, runs on iOS/Android
+// as well); jspdf via the alias above so the patched source is used.
 const context = await esbuild.context({
 	banner: {
 		js: banner,

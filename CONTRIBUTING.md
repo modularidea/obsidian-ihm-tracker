@@ -36,7 +36,9 @@ server-patch/            optional IHateMoney server fork (native category field)
 - TypeScript strict mode, no `any`
 - No Node-only APIs (`fs`, `path`, `Buffer`, ...) — only the Obsidian vault API and
   `requestUrl()`; the plugin is `isDesktopOnly: false` and must run on iOS/Android
-- Comments explain *why*, not *what*
+- Comments explain *why*, not *what* — short, in English, no change history (that lives in git)
+- UI strings in English, sentence case (Obsidian guideline); numbers/dates via `Intl` with the
+  system locale (`src/format.ts`), never hard-coded formats
 - Tests for pure-logic modules (`categorize/`, `stats/`, `sync/category-store.ts` merge logic) —
   no Obsidian mocking needed there
 - Never log or persist a project's server URL/password outside `settings.ts`/`data.json`;

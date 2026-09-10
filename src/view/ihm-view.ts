@@ -1,7 +1,7 @@
 import { ItemView, Menu, Notice, WorkspaceLeaf, setIcon } from 'obsidian';
 import type IhmTrackerPlugin from '../main';
 import { BillCategoryDef, IhmBill, IhmProjectConfig, OTHER_CATEGORY_ID, ProjectCategoryData, TrainingDoc } from '../types';
-import { formatCurrency } from '../format';
+import { formatCurrency, formatDate, monthLabel } from '../format';
 import { IhmMemberRaw } from '../ihm-api/client';
 import { createExpenseClient } from '../backend/create-client';
 import type { ExpenseClient, PaymentMode } from '../backend/expense-client';
@@ -15,7 +15,6 @@ import { ExportOptionsResult, renderExportPanel } from './export-panel';
 import {
 	categoryDef,
 	memberColorFor,
-	monthLabelShort,
 	netClass,
 	netLabel,
 	PivotState,
@@ -28,9 +27,8 @@ import {
 
 export const IHM_VIEW_TYPE = 'ihm-tracker-view';
 
-// `app.setting` ist keine öffentlich typisierte Obsidian-API, aber ein
-// stabiler, plugin-weit üblicher Zugriffsweg um die eigene Settings-Seite
-// programmatisch zu öffnen (siehe openOptionsMenu → "Plugin-Einstellungen").
+// `app.setting` is not part of the public typings but is the established way
+// to open the plugin's own settings tab.
 declare module 'obsidian' {
 	interface App {
 		setting: {
@@ -40,24 +38,11 @@ declare module 'obsidian' {
 	}
 }
 
-// View: Projekt wählen → synchronisieren → 2 Grundtabs (Belege/Auswertung).
-// Belege ist Default-View. Auswertung bündelt die 4 haushub-analogen
-// Stats-Unter-Tabs (Übersicht/Kategorien/Personen/Vergleich, siehe
-// view/stats-tabs.ts) hinter einer zweiten Nav-Ebene.
-//
-// Belege-Tab-Layout ist breitenabhängig (Nutzer-Feedback 2026-09-09, Tablet-
-// Frage): ein `ResizeObserver` auf `contentEl` (Pane-Breite, NICHT
-// Fenster-Breite — ein Obsidian-Pane kann auf großem Screen trotzdem in
-// einer schmalen Sidebar stecken, deshalb kein CSS-`@media`) setzt `isWide`
-// ab ~720px. Schmal: Liste ODER Formular (Anlegen/Bearbeiten), nie beides
-// gleichzeitig. Breit: Liste links + Formular/Leerzustand rechts
-// (Master-Detail) — dasselbe `editingBill`-Feld steuert beide Layouts, nur
-// die Platzierung unterscheidet sich.
-//
-// Anlegen/Bearbeiten/Löschen läuft komplett inline (`bill-form.ts`
-// `renderBillForm()`) statt als Modal (Nutzer-Feedback 2026-09-09) — auch
-// die Lösch-Bestätigung sitzt zweistufig direkt im Formular statt als
-// Popup.
+// Main view: two top-level tabs (Bills / Stats). The bills tab switches
+// between a single column (list OR form) and master-detail (list + form)
+// based on the PANE width (`isWide`, ResizeObserver — a pane can be narrow
+// on a big screen, so no CSS media query). render() rebuilds the whole DOM;
+// scroll positions and pending animations are captured before that.
 
 export type MainTab = 'bills' | 'stats';
 type StatsSubTab = 'overview' | 'categories' | 'members' | 'pivot' | 'settle';
@@ -82,37 +67,18 @@ export class IhmView extends ItemView {
 	private isWide = false;
 	private resizeObserver?: ResizeObserver;
 	private visualViewportHandler?: () => void;
-	/** `'new'` = Anlege-Formular aktiv, `IhmBill` = Bearbeiten-Formular für
-	 * diese Bill aktiv, `null` = kein Formular (Liste/Detail-Leerzustand). */
+	/** 'new' = create form, IhmBill = edit form, null = no form. */
 	private editingBill: IhmBill | 'new' | null = null;
 	private bulkMode = false;
 	private selectedBillIds = new Set<number>();
 	private exportPanelOpen = false;
-	/** Vom IHM-Server übernommen (`fetchCurrency()`), Default bis zum ersten
-	 * Sync bzw. bei nicht-konfigurierter Server-Währung. */
 	private currency = 'EUR';
-	/** Nur bei `backendType === 'cospend'` befüllt (Nutzerwunsch 2026-09-10) —
-	 * `bill-form.ts` blendet das Zahlungsmittel-Feld aus, wenn leer. */
+	/** Cospend only. */
 	private paymentModes: PaymentMode[] = [];
-	/** Scroll-Position der Belegliste bzw. des Tab-Inhalts — wird in
-	 * `render()` VOR dem `root.empty()` aus dem noch alten DOM ausgelesen und
-	 * danach auf das neu gebaute Element zurückgeschrieben. Sonst springt die
-	 * Liste bei jeder Interaktion (z.B. Beleg antippen) nach ganz oben, weil
-	 * jedes `render()` das komplette DOM neu aufbaut (Nutzer-Feedback
-	 * 2026-09-09). */
 	private listScrollTop = 0;
 	private tabScrollTop = 0;
-	/** Für die nächste `render()`-Ausführung vorgemerkte Slide-Animation
-	 * (Nutzerwunsch 2026-09-09: "direction aware" Übergänge) — wird von der
-	 * auslösenden Aktion (Tab-Wechsel, Formular öffnen/schließen) gesetzt,
-	 * bevor `render()` läuft, und dort einmalig konsumiert. Muss vorab
-	 * gesetzt werden statt erst nach dem Bauen des neuen Inhalts, weil
-	 * `render()` das komplette DOM neu aufbaut und wir nur wissen, ob es
-	 * "vorwärts" oder "zurück" geht, bevor der neue Zustand gesetzt ist. */
+	/** Slide direction for the next render(), set by the triggering action. */
 	private pendingSlide: 'forward' | 'back' | null = null;
-	/** Einmaliger Trigger für die Aufklapp-Animation des Filter-Panels (siehe
-	 * `animateFilterPanelOpen`) — Zuklappen läuft separat direkt im Klick-
-	 * Handler (Nutzerwunsch 2026-09-09: "Ausklappen etwas smoother"). */
 	private pendingFilterOpen = false;
 
 	constructor(leaf: WorkspaceLeaf, plugin: IhmTrackerPlugin) {
@@ -134,9 +100,6 @@ export class IhmView extends ItemView {
 
 	async onOpen(): Promise<void> {
 		if (!this.selectedProjectId && this.plugin.settings.projects.length > 0) {
-			// Zuletzt gewähltes Projekt bevorzugen (Nutzerwunsch 2026-09-10) —
-			// nur falls es noch existiert (nicht zwischenzeitlich in den
-			// Settings gelöscht), sonst wie bisher das erste in der Liste.
 			const last = this.plugin.settings.lastSelectedProjectId;
 			const lastStillExists = last && this.plugin.settings.projects.some((p) => p.id === last);
 			this.selectedProjectId = lastStillExists ? last : this.plugin.settings.projects[0]!.id;
@@ -147,9 +110,6 @@ export class IhmView extends ItemView {
 			this.render();
 		}
 
-		// Periodischer Hintergrund-Sync — läuft nur solange DIESE View offen
-		// ist: `registerInterval` räumt beim Schließen automatisch auf (siehe
-		// Obsidian-Component-Lifecycle), kein manuelles clearInterval nötig.
 		if (this.plugin.settings.autoSyncEnabled) {
 			const intervalMs = Math.max(1, this.plugin.settings.autoSyncIntervalMinutes) * 60_000;
 			this.registerInterval(
@@ -169,24 +129,21 @@ export class IhmView extends ItemView {
 		});
 		this.resizeObserver.observe(this.contentEl);
 
-		// iOS: `height:100%` (siehe styles.css `.ihm-tracker-view`) reagiert
-		// NICHT auf die visuelle Tastatur-Verkleinerung — nur der Layout-
-		// Viewport bleibt unverändert, wodurch unsere View über den
-		// tatsächlich sichtbaren Bereich hinausragt und Obsidians eigenes
-		// unteres Mobile-UI-Element (View-Switcher) sich mit unserem letzten
-		// sichtbaren Inhalt überlappt (Nutzer-Feedback 2026-09-10, Screenshot:
-		// Overlay über der Tastatur beim Titel-Editieren). `visualViewport`
-		// kennt die tatsächlich sichtbare Höhe — setzt sie explizit als
-		// Inline-Höhe, überschreibt damit `height:100%` nur bei Bedarf
-		// (schließt sich die Tastatur, feuert erneut ein `resize` mit der
-		// vollen Höhe). Auf Desktop faktisch ein No-Op (kein
-		// Tastatur-bedingtes Schrumpfen dort). `window.visualViewport` ist in
-		// älteren WebViews ggf. `undefined` — dann bleibt es beim
-		// CSS-`height:100%`-Verhalten.
+		// iOS: `height:100%` ignores the on-screen keyboard (only the visual
+		// viewport shrinks). While the keyboard is open, clamp the view to the
+		// visible area; otherwise leave the CSS height alone (visualViewport
+		// also fires on plain window resizes).
 		if (window.visualViewport) {
 			this.visualViewportHandler = () => {
 				const vv = window.visualViewport;
-				if (vv) this.contentEl.setCssStyles({ height: `${vv.height}px` });
+				if (!vv) return;
+				const keyboardOpen = vv.height < window.innerHeight - 100;
+				if (keyboardOpen) {
+					const top = this.contentEl.getBoundingClientRect().top;
+					this.contentEl.setCssStyles({ height: `${Math.max(0, vv.height - top)}px` });
+				} else {
+					this.contentEl.setCssStyles({ height: '' });
+				}
 			};
 			window.visualViewport.addEventListener('resize', this.visualViewportHandler);
 		}
@@ -203,30 +160,29 @@ export class IhmView extends ItemView {
 		return this.plugin.settings.projects.find((p) => p.id === this.selectedProjectId) ?? null;
 	}
 
-	/** Merkt die Richtung für die Slide-Animation der NÄCHSTEN `render()`-
-	 * Ausführung vor. "forward" = neuer Inhalt liegt "weiter vorne"
-	 * (Auswertung nach Belege, Formular öffnen) und schiebt von rechts rein;
-	 * "back" = umgekehrt, schiebt von links rein — analog iOS
-	 * Push/Pop-Navigation. */
+	private activeMembers(): IhmMemberRaw[] {
+		return this.members.filter((m) => m.activated);
+	}
+
+	/** Active members plus inactive ones still referenced by `existing`, so
+	 * an old bill can be edited without its participants vanishing. */
+	private formMembers(existing?: IhmBill): IhmMemberRaw[] {
+		const referenced = new Set(existing ? [existing.payerIhmId, ...existing.owerIhmIds] : []);
+		return this.members.filter((m) => m.activated || referenced.has(m.ihmId));
+	}
+
+	/** "forward" slides in from the right (iOS push), "back" from the left. */
 	private queueSlide(direction: 'forward' | 'back'): void {
 		this.pendingSlide = direction;
 	}
 
-	/** Aufklappen: Panel liegt nach `render()` schon fertig im DOM (finale
-	 * Höhe per `scrollHeight` messbar) — Trick statt `height:auto`-Transition
-	 * (die nicht animiert): erst auf 0 zurücksetzen, ERZWUNGENEN Reflow
-	 * (`offsetHeight`-Lesen) dazwischen, dann erst auf die gemessene
-	 * Zielhöhe animieren. Ohne den erzwungenen Reflow fasst der Browser
-	 * beide Style-Änderungen manchmal zu einem einzigen Sprung zusammen
-	 * statt zu animieren (Nutzer-Feedback 2026-09-09: Einklappen — mit
-	 * einfachem `requestAnimationFrame` statt Reflow — ruckelte dadurch).
-	 * Inline-Styles werden danach wieder entfernt, damit spätere
-	 * Inhaltsänderungen (z.B. Jahr-Dropdown erscheint/verschwindet) nicht
-	 * auf einer fixen Pixelhöhe hängen bleiben. */
+	/** `height:auto` does not animate: measure, reset to 0, force a reflow
+	 * (otherwise both style writes collapse into one jump), then animate to
+	 * the measured height. Inline styles are removed afterwards. */
 	private animateFilterPanelOpen(panel: HTMLElement): void {
 		const target = panel.scrollHeight;
 		panel.setCssStyles({ overflow: 'hidden', height: '0px', opacity: '0' });
-		void panel.offsetHeight; // erzwingt Reflow, siehe Kommentar oben
+		void panel.offsetHeight;
 		panel.setCssStyles({ transition: 'height 160ms ease, opacity 160ms ease', height: `${target}px`, opacity: '1' });
 		panel.addEventListener(
 			'transitionend',
@@ -237,11 +193,7 @@ export class IhmView extends ItemView {
 		);
 	}
 
-	/** Zuklappen läuft VOR dem `render()`, das das Panel sonst hart aus dem
-	 * DOM entfernen würde — `onDone` (setzt `filtersExpanded=false` + rendert)
-	 * feuert erst nach der Animation. Gleicher erzwungener Reflow wie beim
-	 * Aufklappen (siehe dort), sonst ruckelt gerade dieser Fall (bestehendes
-	 * Element statt frisch eingefügtem Panel, siehe Kommentar oben). */
+	/** Collapse runs BEFORE render() removes the panel; `onDone` renders. */
 	private collapseFilterPanel(panel: HTMLElement, onDone: () => void): void {
 		const from = panel.scrollHeight;
 		panel.setCssStyles({ overflow: 'hidden', height: `${from}px` });
@@ -250,12 +202,8 @@ export class IhmView extends ItemView {
 		panel.addEventListener('transitionend', onDone, { once: true });
 	}
 
-	/** Erkennt einen schnellen, überwiegend horizontalen Swipe nach RECHTS
-	 * (Touch UND Maus-Drag über Pointer Events) und ruft `onBack()` auf —
-	 * "Swipe zum Zurückgehen" wie in iOS-Apps (Nutzerwunsch 2026-09-09).
-	 * Startet die Geste NICHT auf Eingabefeldern/Buttons/Chip-Reihen (siehe
-	 * `EXCLUDE`), damit Tippen/Chip-Scrollen/Button-Klicks nicht versehentlich
-	 * als Swipe interpretiert werden. */
+	/** Quick, mostly horizontal swipe to the right → `onBack()`. Ignores
+	 * gestures starting on inputs/buttons/chip rows. */
 	private bindSwipeBack(el: HTMLElement, onBack: () => void): void {
 		const EXCLUDE = 'input, select, textarea, button, .ihm-form-chip-row, .ihm-filter-panel-body';
 		let startX = 0;
@@ -281,15 +229,6 @@ export class IhmView extends ItemView {
 
 	private render(): void {
 		const root = this.contentEl;
-		// Scroll-Positionen aus dem noch alten DOM sichern, bevor es gleich
-		// weggeworfen wird (siehe `listScrollTop`-Kommentar an der Feld-
-		// Deklaration).
-		// `.ihm-bill-scroll-area` (nicht mehr `.ihm-bills-list-pane`/
-		// `.ihm-tab-content` selbst) trägt jetzt den tatsächlichen Beleg-
-		// Listen-Scroll, siehe `renderBillsListPane()` — gilt seit diesem
-		// Umbau für schmales UND breites Layout gleichermaßen (vorher nur für
-		// breit erfasst, im schmalen Layout lief das bisher unbeabsichtigt
-		// über `tabScrollTop`/`.ihm-tab-content` mit).
 		const prevScrollArea = root.querySelector<HTMLElement>('.ihm-bill-scroll-area');
 		if (prevScrollArea) this.listScrollTop = prevScrollArea.scrollTop;
 		const prevTabContent = root.querySelector<HTMLElement>('.ihm-tab-content');
@@ -299,40 +238,24 @@ export class IhmView extends ItemView {
 		root.addClass('ihm-tracker-view');
 
 		if (this.plugin.settings.projects.length === 0) {
-			root.createEl('p', {
-				text: 'Kein IHM-Projekt konfiguriert — in den Plugin-Einstellungen eins hinzufügen.',
-			});
+			root.createEl('p', { text: 'No project configured — add one in the plugin settings.' });
 			return;
 		}
 
-		// `.ihm-header` bündelt Topbar + (falls ausgeklappt) Filter-Panel als
-		// EIN nicht-scrollendes Element — die Trennlinie/der Schatten sitzt an
-		// dessen unterem Rand, also unter dem Filter-Panel statt zwischen Tabs
-		// und Filter-Panel (Nutzer-Feedback 2026-09-09: vorher an der falschen
-		// Stelle, weil `border-bottom`/`box-shadow` fest auf der Topbar allein
-		// lagen und das Filter-Panel als Teil des scrollenden Inhalts danach
-		// kam).
+		// Header = top bar + (optional) sub-nav / balance bar / filter panel,
+		// one non-scrolling block; the content below scrolls.
 		const header = root.createDiv({ cls: 'ihm-header' });
 		this.renderTopBar(header);
-		// Subtab-Nav + Jahr-Filter jetzt in `.ihm-header` (nicht-scrollend) statt
-		// in `content` — vorher liefen sie beim Slide-Übergang der Unter-Tabs
-		// (`queueSlide()` animiert `content` als Ganzes) sichtbar MIT, obwohl sie
-		// selbst nicht wechseln (Nutzer-Feedback 2026-09-09: "verschieben sich
-		// die ganze Zeit", im Gegensatz zu den Haupt-Tabs, die schon immer in
-		// `header` sitzen).
 		if (this.mainTab === 'stats') this.renderStatsSubNav(header);
 
-		// "Lade…" nur beim ALLERERSTEN Sync (noch keine Daten da) — ein
-		// Hintergrund-Refresh (z.B. nach Anlegen/Bearbeiten, siehe `sync()`)
-		// baut die Ansicht sonst bei jedem Aufruf einmal komplett leer und
-		// wieder auf, das wirkte wie ein unsauberer Flackerer (Nutzer-Feedback
-		// 2026-09-09).
+		// "Loading…" only on the very first sync; later refreshes keep the old
+		// view until new data is in (no flicker).
 		if (this.loading && this.categoryData === null) {
-			root.createEl('p', { text: 'Lade…' });
+			root.createEl('p', { text: 'Loading…' });
 			return;
 		}
 		if (this.categoryData === null) {
-			root.createEl('p', { text: 'Noch nicht synchronisiert.' });
+			root.createEl('p', { text: 'Not synced yet.' });
 			return;
 		}
 
@@ -355,12 +278,8 @@ export class IhmView extends ItemView {
 		} else {
 			this.renderStatsBody(content);
 		}
-		// `.ihm-form-root` (Beleg-Formular bei schmalem Layout) füllt
-		// `.ihm-tab-content` per `height:100%` exakt aus und scrollt selbst
-		// NICHT mehr (siehe `.ihm-form-scroll-area`) — ein geerbter
-		// `tabScrollTop` von einer vorherigen, höheren Ansicht (z.B. langer
-		// Auswertung-Tab) hätte hier sonst den oberen Formularbereich
-		// abgeschnitten (Nutzer-Feedback 2026-09-10: "Titel/Betrag fehlen").
+		// The form fills the content area and scrolls internally — an
+		// inherited scroll offset would cut off its top.
 		if (!content.querySelector('.ihm-form-root')) content.scrollTop = this.tabScrollTop;
 
 		if (this.pendingSlide) {
@@ -396,34 +315,22 @@ export class IhmView extends ItemView {
 		});
 	}
 
-	/** Kategorie- ODER Jahr-Filter aktiv (Sortierung/Gruppierung zählen
-	 * bewusst NICHT als "Filter" — die verstecken nichts, sie ordnen nur um;
-	 * ein Reset davon wäre für den Nutzer überraschend). Steuert den
-	 * Farb-Punkt auf dem Filter-Icon + ob der Reset-Button im Panel
-	 * erscheint (Nutzer-Feedback 2026-09-09). */
+	/** Sorting/grouping only reorder, so they do not count as "filter". */
 	private filtersActive(): boolean {
 		return this.categoryFilter !== null || this.yearFilter !== null;
 	}
 
-	/** Kein Projekt-Picker mehr in der Topbar (Nutzerentscheidung 2026-09-09,
-	 * dritte Korrekturrunde zum Header) — Projekt-Wechsel sitzt komplett im
-	 * ⋮-Options-Menü (siehe `openOptionsMenu`). Dadurch ist die Topbar IMMER
-	 * eine einzige Zeile, keine breitenabhängige Ein-/Zweizeilen-Logik mehr
-	 * nötig (die war Ursache mehrerer Bugs in den Runden davor). */
 	private renderTopBar(root: HTMLElement): void {
 		const bar = root.createDiv({ cls: 'ihm-topbar' });
 		const row = bar.createDiv({ cls: 'ihm-topbar-row' });
 
 		const tabGroup = row.createDiv({ cls: 'ihm-topbar-tabs' });
 		const tabs: { id: MainTab; label: string }[] = [
-			{ id: 'bills', label: 'Belege' },
-			{ id: 'stats', label: 'Auswertung' },
+			{ id: 'bills', label: 'Bills' },
+			{ id: 'stats', label: 'Stats' },
 		];
 		for (const t of tabs) {
-			const chip = tabGroup.createEl('button', {
-				text: t.label,
-				cls: t.id === this.mainTab ? 'ihm-tab-chip is-active' : 'ihm-tab-chip',
-			});
+			const chip = tabGroup.createEl('button', { text: t.label, cls: t.id === this.mainTab ? 'ihm-tab-chip is-active' : 'ihm-tab-chip' });
 			chip.onclick = () => {
 				if (t.id === this.mainTab) return;
 				this.queueSlide(t.id === 'stats' ? 'forward' : 'back');
@@ -432,20 +339,16 @@ export class IhmView extends ItemView {
 			};
 		}
 
-		// Reihenfolge rechts→links (Nutzerwunsch 2026-09-10): Optionen, Sync,
-		// Filter — also im DOM (links→rechts) Filter, Sync, Optionen.
 		const actions = row.createDiv({ cls: 'ihm-topbar-actions' });
 		if (this.mainTab === 'bills') {
 			const filterBtn = actions.createEl('button', {
 				cls: this.filtersExpanded ? 'ihm-icon-btn is-active' : 'ihm-icon-btn',
-				attr: { 'aria-label': 'Filter/Sortierung' },
+				attr: { 'aria-label': 'Filter and sort' },
 			});
 			setIcon(filterBtn, 'filter');
 			if (this.filtersActive()) filterBtn.createDiv({ cls: 'ihm-filter-dot' });
 			filterBtn.onclick = () => {
 				if (this.filtersExpanded) {
-					// Zuklappen: erst wegschieben, DANN erst `render()` (das würde
-					// das Panel sofort hart entfernen statt animiert).
 					const panel = root.querySelector<HTMLElement>('.ihm-filter-panel-body');
 					if (panel) {
 						this.collapseFilterPanel(panel, () => {
@@ -460,45 +363,30 @@ export class IhmView extends ItemView {
 				this.render();
 			};
 		}
-		// Dedizierter Sync-Button direkt im Topbar (Nutzerwunsch 2026-09-10) —
-		// vorher nur im ⋮-Options-Menü erreichbar, was für den häufigsten
-		// manuellen Zwischen-Sync (geteiltes Projekt, andere haben inzwischen
-		// etwas angelegt) einen Umweg über ein Menü bedeutete. Bleibt zusätzlich
-		// im Options-Menü (Entdeckbarkeit, gewohnte Stelle aus vorherigen
-		// Sessions).
 		const syncBtn = actions.createEl('button', {
 			cls: this.loading ? 'ihm-icon-btn is-syncing' : 'ihm-icon-btn',
-			attr: { 'aria-label': 'Synchronisieren' },
+			attr: { 'aria-label': 'Sync' },
 		});
 		setIcon(syncBtn, 'refresh-cw');
 		syncBtn.onclick = () => {
-			// Sofortiges visuelles Feedback (Nutzerwunsch 2026-09-10) — `sync()`
-			// selbst rendert bei einem NICHT-allerersten Sync bewusst nicht sofort
-			// neu (kein Flackern, siehe `sync()`-Kommentar), der Button würde ohne
-			// diesen direkten DOM-Zugriff bis zum fertigen Sync unverändert
-			// bleiben. `sync()`s eigener Abschluss-`render()` baut den Button
-			// ohnehin frisch (ohne die Klasse) auf, kein manuelles Aufräumen nötig.
+			// Immediate feedback: a background sync does not re-render until done.
 			syncBtn.addClass('is-syncing');
 			void this.sync();
 		};
-		const optionsBtn = actions.createEl('button', { cls: 'ihm-icon-btn', attr: { 'aria-label': 'Weitere Optionen' } });
+		const optionsBtn = actions.createEl('button', { cls: 'ihm-icon-btn', attr: { 'aria-label': 'More options' } });
 		setIcon(optionsBtn, 'more-vertical');
 		optionsBtn.onclick = (evt) => this.openOptionsMenu(evt);
 	}
 
-	/** Saldo-Leiste über der Belegliste (Nutzerwunsch, Screenshot 2026-09-10):
-	 * pro Mitglied Avatar+Pfeil+Betrag, ganze Leiste EIN Klickziel → springt
-	 * zum Ausgleich-Tab. Pfeil-Semantik nach Referenz-Screenshot: ↓ = bekommt
-	 * Geld (Saldo positiv, grün wie `netClass`), ↑ = schuldet (Saldo negativ,
-	 * rot) — bei ausgeglichenem Saldo (< 1 Cent) kein Pfeil, neutrale Farbe
-	 * (Nutzerentscheidung, sonst suggeriert der Pfeil eine Richtung ohne
-	 * echten Betrag dahinter). */
+	/** Per member avatar + arrow + amount; the whole bar links to Settle up.
+	 * ↓ green = gets money, ↑ red = owes; no arrow when settled. */
 	private renderBalanceBar(root: HTMLElement): void {
-		if (this.members.length === 0) return;
+		const shown = this.members.filter((m) => m.activated || Math.abs(m.balance) >= 0.01);
+		if (shown.length === 0) return;
 		const bar = root.createDiv({ cls: 'ihm-balance-bar' });
 		bar.setAttr('role', 'button');
 		bar.setAttr('tabindex', '0');
-		bar.setAttr('aria-label', 'Zum Ausgleich springen');
+		bar.setAttr('aria-label', 'Go to settle up');
 		const jumpToSettle = () => {
 			this.mainTab = 'stats';
 			this.statsSubTab = 'settle';
@@ -512,10 +400,10 @@ export class IhmView extends ItemView {
 				jumpToSettle();
 			}
 		};
-		for (const m of this.members) {
+		for (const m of shown) {
 			const item = bar.createDiv({ cls: 'ihm-balance-item', attr: { title: `${m.name}: ${netLabel(m.balance, this.currency)}` } });
 			const avatar = item.createSpan({ cls: 'ihm-avatar ihm-avatar-sm', text: m.name.charAt(0).toUpperCase() });
-			avatar.style.background = memberColorFor(this.members, m.ihmId);
+			avatar.setCssStyles({ background: memberColorFor(this.members, m.ihmId) });
 			if (Math.abs(m.balance) >= 0.01) {
 				setIcon(item.createSpan({ cls: netClass(m.balance) }), m.balance > 0 ? 'arrow-down' : 'arrow-up');
 			}
@@ -523,21 +411,13 @@ export class IhmView extends ItemView {
 		}
 	}
 
-	/** Projekt-Wechsel + Sync + Auswählen (Bulk-Modus, Desktop-Fallback zum
-	 * Longpress) + Export + Einstellungen — alles in EINEM Menü statt
-	 * getrennt (Nutzerentscheidung 2026-09-09: Projekt-Picker komplett aus
-	 * der Topbar raus, analog MoneyBuster/PayForMe). */
+	/** Project switch + sync + select (desktop fallback for long-press) +
+	 * export + settings, all in one menu. Plain text with a backend tag —
+	 * Obsidian's Menu API does not support right-aligned layouts reliably. */
 	private openOptionsMenu(evt: MouseEvent): void {
 		const menu = new Menu();
 		for (const p of this.plugin.settings.projects) {
-			// Backend-Tag (Nutzerwunsch 2026-09-10) — erster Versuch mit
-			// `DocumentFragment`+Flex/`space-between` sollte echt rechtsbündig
-			// layouten, blieb aber ohne jeden Abstand ("test9IHM") — Obsidians
-			// Menü-Titel-Container scheint sich auf Inhaltsbreite zu schrumpfen,
-			// `width:100%`/`min-width` hatten nichts Zuverlässiges zum Verteilen.
-			// Zurück auf simplen angehängten Text (Nutzerwunsch: "sicherer") —
-			// kein echtes rechtsbündig, aber garantiert lesbar.
-			const tag = p.backendType === 'cospend' ? 'Cospend' : p.backendType === 'local' ? 'Lokal' : 'IHM';
+			const tag = p.backendType === 'cospend' ? 'Cospend' : p.backendType === 'local' ? 'Local' : 'IHM';
 			menu.addItem((item) =>
 				item
 					.setTitle(`${p.emoji} ${p.name} · ${tag}`)
@@ -546,11 +426,11 @@ export class IhmView extends ItemView {
 			);
 		}
 		menu.addSeparator();
-		menu.addItem((item) => item.setTitle('Synchronisieren').setIcon('refresh-cw').onClick(() => this.sync()));
+		menu.addItem((item) => item.setTitle('Sync').setIcon('refresh-cw').onClick(() => this.sync()));
 		if (this.mainTab === 'bills' && !this.bulkMode) {
 			menu.addItem((item) =>
 				item
-					.setTitle('Auswählen')
+					.setTitle('Select')
 					.setIcon('check-square')
 					.onClick(() => {
 						this.bulkMode = true;
@@ -559,9 +439,9 @@ export class IhmView extends ItemView {
 			);
 		}
 		menu.addSeparator();
-		menu.addItem((item) => item.setTitle('Exportieren').setIcon('download').onClick(() => this.openExportPanel()));
+		menu.addItem((item) => item.setTitle('Export').setIcon('download').onClick(() => this.openExportPanel()));
 		menu.addSeparator();
-		menu.addItem((item) => item.setTitle('Plugin-Einstellungen').setIcon('settings').onClick(() => this.openPluginSettings()));
+		menu.addItem((item) => item.setTitle('Plugin settings').setIcon('settings').onClick(() => this.openPluginSettings()));
 		menu.showAtMouseEvent(evt);
 	}
 
@@ -581,18 +461,11 @@ export class IhmView extends ItemView {
 		void this.sync();
 	}
 
-	/** Von `main.ts` `registerObsidianProtocolHandler()` gerufen (Nutzerwunsch
-	 * 2026-09-10: Home-Screen-Icon per Deeplink, z.B. iOS-Shortcut) — matcht
-	 * NICHT gegen die interne (zufällige) `IhmProjectConfig.id`, sondern gegen
-	 * den vom Nutzer selbst vergebenen IHM-Projekt-Slug (`projectId`) oder den
-	 * Anzeigenamen, da nur diese beiden in einer von Hand gebauten URI
-	 * praktikabel sind. Case-insensitive, da Shortcuts-Apps URL-Encoding von
-	 * Groß-/Kleinschreibung leicht verschlucken. */
+	/** Deep link (`obsidian://ihm-tracker-open`): matches the user-visible
+	 * slug or name, case-insensitively, not the internal random id. */
 	public openProjectBySlug(slugOrName: string, tab?: MainTab): void {
 		const needle = slugOrName.trim().toLowerCase();
-		const project = this.plugin.settings.projects.find(
-			(p) => p.projectId.toLowerCase() === needle || p.name.toLowerCase() === needle,
-		);
+		const project = this.plugin.settings.projects.find((p) => p.projectId.toLowerCase() === needle || p.name.toLowerCase() === needle);
 		if (project) this.switchProject(project.id);
 		if (tab) this.mainTab = tab;
 		this.render();
@@ -603,25 +476,22 @@ export class IhmView extends ItemView {
 		this.app.setting.openTabById(this.plugin.manifest.id);
 	}
 
+	/** Lives in the header (not the animated content) so it does not slide
+	 * along on sub-tab changes. */
 	private renderStatsSubNav(header: HTMLElement): void {
-		// Jahr-Filter bleibt hier, unverändert (Auswertungstab bewusst nicht
-		// umgebaut, Nutzer-Feedback 2026-09-09: "lassen wir erstmal so").
 		this.renderYearFilter(header);
 
 		const subTabOrder: StatsSubTab[] = ['overview', 'categories', 'members', 'pivot', 'settle'];
 		const subTabs: { id: StatsSubTab; label: string }[] = [
-			{ id: 'overview', label: 'Übersicht' },
-			{ id: 'categories', label: 'Kategorien' },
-			{ id: 'members', label: 'Personen' },
-			{ id: 'pivot', label: 'Vergleich' },
-			{ id: 'settle', label: 'Ausgleich' },
+			{ id: 'overview', label: 'Overview' },
+			{ id: 'categories', label: 'Categories' },
+			{ id: 'members', label: 'Members' },
+			{ id: 'pivot', label: 'Comparison' },
+			{ id: 'settle', label: 'Settle up' },
 		];
 		const nav = header.createDiv({ cls: 'ihm-subtabs' });
 		for (const t of subTabs) {
-			const btn = nav.createEl('button', {
-				text: t.label,
-				cls: t.id === this.statsSubTab ? 'ihm-subtab-btn is-active' : 'ihm-subtab-btn',
-			});
+			const btn = nav.createEl('button', { text: t.label, cls: t.id === this.statsSubTab ? 'ihm-subtab-btn is-active' : 'ihm-subtab-btn' });
 			btn.onclick = () => {
 				if (t.id === this.statsSubTab) return;
 				this.queueSlide(subTabOrder.indexOf(t.id) > subTabOrder.indexOf(this.statsSubTab) ? 'forward' : 'back');
@@ -667,9 +537,8 @@ export class IhmView extends ItemView {
 	private renderYearFilter(root: HTMLElement): void {
 		const years = [...new Set(this.bills.map((b) => b.date.slice(0, 4)))].sort().reverse();
 		if (years.length <= 1) return;
-		const row = root.createDiv({ cls: 'ihm-year-filter' });
-		const select = row.createEl('select');
-		select.createEl('option', { text: 'Gesamter Zeitraum', value: '' });
+		const select = root.createDiv({ cls: 'ihm-year-filter' }).createEl('select');
+		select.createEl('option', { text: 'All time', value: '' });
 		for (const y of years) select.createEl('option', { text: y, value: y });
 		select.value = this.yearFilter ?? '';
 		select.onchange = () => {
@@ -678,23 +547,14 @@ export class IhmView extends ItemView {
 		};
 	}
 
-	/** Bills für die 4 Stats-Tabs: nur Ausgaben (keine internen
-	 * Ausgleichszahlungen, siehe aggregate.ts `isExpense`), global per
-	 * Jahr-Filter eingeschränkt. Kein Kategorie-Filter hier — der lebt lokal
-	 * je Tab (Belege-Tab: `filteredBills()`; Vergleich-Tab: `pivotState`). */
+	/** Stats: expenses only (no reimbursements), year filter applied. */
 	private statsBills(): IhmBill[] {
 		let bills = this.bills.filter(isExpense);
 		if (this.yearFilter) bills = bills.filter((b) => b.date.startsWith(this.yearFilter!));
 		return bills;
 	}
 
-	/** ANDERS als `statsBills()` — Ausgleichszahlungen bleiben hier drin (Bug,
-	 * gemeldet 2026-09-10, per curl gegen den echten Fork-Server verifiziert:
-	 * eine über den Ausgleich-Tab angelegte Reimbursement-Bill existierte am
-	 * Server, tauchte aber in der Belegliste nie auf). Die Belegliste soll
-	 * zeigen, was tatsächlich auf dem Server existiert — nur die Statistik-
-	 * Aggregation (`statsBills()`) muss sie ausschließen, sonst würde eine
-	 * interne Ausgleichszahlung die Ausgabenstatistik verfälschen. */
+	/** Bill list: everything on the server incl. reimbursements, filtered. */
 	private filteredBills(): IhmBill[] {
 		let bills = this.bills;
 		if (this.yearFilter) bills = bills.filter((b) => b.date.startsWith(this.yearFilter!));
@@ -702,31 +562,19 @@ export class IhmView extends ItemView {
 		return bills;
 	}
 
-	/** Für den Export-Dialog "Alle Belege" — ignoriert Jahr-/Kategorie-Filter,
-	 * zeigt aber (wie `filteredBills()`) auch Ausgleichszahlungen. */
 	private allBills(): IhmBill[] {
 		return this.bills;
 	}
 
 	private currentFilterSummary(): string {
 		return [
-			this.yearFilter ? `Jahr: ${this.yearFilter}` : 'Zeitraum: gesamt',
-			this.categoryFilter
-				? `Kategorie: ${this.categoryData?.categories.find((c) => c.id === this.categoryFilter)?.label}`
-				: 'Kategorie: alle',
+			this.yearFilter ? `Year: ${this.yearFilter}` : 'All time',
+			this.categoryFilter ? `Category: ${this.categoryData?.categories.find((c) => c.id === this.categoryFilter)?.label}` : 'All categories',
 		].join(' · ');
 	}
 
-	/** Tiebreak IMMER per `ihmId` (Nutzerfeedback 2026-09-10: "Reihenfolge
-	 * wechselt, wenn Kategorie eines Belegs geändert wird") — Root Cause war
-	 * NICHT ein versehentliches Sortieren nach Kategorie, sondern dass
-	 * gleiches Datum (bei Test-/Demo-Daten häufig) ohne Tiebreak einfach in
-	 * der Reihenfolge blieb, in der `fetchBills()` sie zurückgab. Diese
-	 * Server-Reihenfolge ist NICHT garantiert stabil über Requests hinweg
-	 * (insbesondere nicht nach einem `updateBill()`, z.B. beim Bearbeiten
-	 * einer Kategorie über das Formular, was einen vollen `sync()`-Refetch
-	 * auslöst) — die Liste "hüpfte" dadurch bei gleichem Datum sichtbar
-	 * herum. `ihmId` ist die einzige vom Server unabhängig stabile Eigenschaft. */
+	/** `ihmId` tiebreak everywhere: server order is not stable across
+	 * requests, so equal dates would otherwise reshuffle after each sync. */
 	private sortBills(bills: IhmBill[]): IhmBill[] {
 		const sorted = [...bills];
 		switch (this.billSort) {
@@ -749,17 +597,15 @@ export class IhmView extends ItemView {
 		return sorted;
 	}
 
-	/** Gruppiert bereits sortierte Bills. Gruppen-Reihenfolge: Monat
-	 * chronologisch absteigend (neueste zuerst, wie überall sonst im Plugin);
-	 * Kategorie/Bezahlt-von nach Gruppensumme absteigend (analog Kategorien-/
-	 * Vergleich-Tab-Ranking). */
+	/** Groups already sorted bills. Months newest first; category/payer by
+	 * group total descending. */
 	private groupBills(sorted: IhmBill[]): { label: string; total: number; bills: IhmBill[] }[] {
 		if (this.billGroupBy === 'none') return [{ label: '', total: 0, bills: sorted }];
 
 		const keyOf = (b: IhmBill): { key: string; label: string } => {
 			if (this.billGroupBy === 'month') {
 				const key = b.date.slice(0, 7);
-				return { key, label: monthLabelShort(key) };
+				return { key, label: monthLabel(key, 'short') };
 			}
 			if (this.billGroupBy === 'category') {
 				const catId = categoryOf(b);
@@ -780,18 +626,12 @@ export class IhmView extends ItemView {
 		}
 
 		const entries = [...groups.entries()];
-		if (this.billGroupBy === 'month') {
-			entries.sort((a, b) => (a[0] < b[0] ? 1 : -1)); // Monat-Key yyyy-mm sortiert chronologisch als String
-		} else {
-			entries.sort((a, b) => b[1].total - a[1].total);
-		}
+		if (this.billGroupBy === 'month') entries.sort((a, b) => (a[0] < b[0] ? 1 : -1));
+		else entries.sort((a, b) => b[1].total - a[1].total);
 		return entries.map(([, g]) => g);
 	}
 
 	private renderBillsTab(content: HTMLElement): void {
-		// Schmal + Formular aktiv: Formular ersetzt die komplette Tab-Fläche
-		// (kein Modal mehr, siehe bill-form.ts) statt Liste+Formular
-		// nebeneinander — dafür ist auf Handy/Sidebar-Breite kein Platz.
 		if (!this.isWide && this.editingBill !== null) {
 			this.renderBillFormPane(content, true);
 			return;
@@ -802,42 +642,28 @@ export class IhmView extends ItemView {
 			return;
 		}
 
-		// Breit (Tablet/breiter Tab): Master-Detail — Liste links, Formular
-		// oder Leerzustand rechts (Nutzerfrage 2026-09-09: Tablet-Split).
 		const split = content.createDiv({ cls: 'ihm-bills-split' });
 		this.renderBillsListPane(split.createDiv({ cls: 'ihm-bills-list-pane' }));
 		const detailPane = split.createDiv({ cls: 'ihm-bills-detail-pane' });
 		if (this.editingBill !== null) {
 			this.renderBillFormPane(detailPane, false);
 		} else {
-			detailPane.createDiv({
-				cls: 'ihm-bills-detail-empty ihm-muted',
-				text: 'Beleg zum Bearbeiten wählen oder „+“ für einen neuen Beleg.',
-			});
+			detailPane.createDiv({ cls: 'ihm-bills-detail-empty ihm-muted', text: 'Select a bill to edit or tap “+” for a new one.' });
 		}
 	}
 
+	/** The scroll area is a child of `pane`; the FAB stays a non-scrolling
+	 * sibling (an absolutely positioned child of a scrolling container would
+	 * scroll along as part of its overflow). */
 	private renderBillsListPane(pane: HTMLElement): void {
-		// `pane` selbst (`.ihm-tab-content` schmal, `.ihm-bills-list-pane`
-		// breit) scrollt NICHT mehr direkt — neuer innerer
-		// `.ihm-bill-scroll-area`-Wrapper übernimmt das Scrollen, `renderFab()`
-		// bleibt Kind von `pane` selbst. Grund: der FAB braucht einen NICHT
-		// scrollenden Bezugsrahmen für `position:absolute` — als Kind eines
-		// tatsächlich überlaufenden `overflow:auto`-Containers wird er Teil
-		// von dessen "scrollable overflow" und scrollt sichtbar mit (Nutzer-
-		// Feedback 2026-09-10, iOS-Screenshot: FAB tauchte mitten in der Liste
-		// auf statt am unteren Rand zu schweben).
 		const scrollArea = pane.createDiv({ cls: 'ihm-bill-scroll-area' });
-
-		// Filter-Panel wird direkt in `render()` in `.ihm-header` gerendert
-		// (nicht-scrollend, siehe dort) statt hier.
 		this.renderBulkBar(scrollArea);
 
 		const list = scrollArea.createDiv({ cls: 'ihm-bill-list' });
 		const sorted = this.sortBills(this.filteredBills());
 
 		if (sorted.length === 0) {
-			list.createEl('p', { text: 'Keine Belege für diese Auswahl.' });
+			list.createEl('p', { text: 'No bills match this selection.' });
 		} else {
 			for (const group of this.groupBills(sorted)) {
 				if (this.billGroupBy !== 'none') {
@@ -853,19 +679,11 @@ export class IhmView extends ItemView {
 		this.renderFab(pane);
 	}
 
-	/** Kategorie/Sortierung/Gruppierung/Jahr — ausgeklappt über das Filter-
-	 * Icon in der oberen Tableiste (`renderTopBar`, nur bei aktivem Belege-
-	 * Tab sichtbar), standardmäßig eingeklappt (Nutzer-Feedback 2026-09-09:
-	 * sollen nicht permanent Platz belegen). Wird in `render()` direkt in
-	 * `.ihm-header` gerendert (nicht-scrollend, zusammen mit der Topbar),
-	 * NICHT in die scrollende Belegliste — sonst säße die Trennlinie/der
-	 * Schatten zwischen Tabs und Filter-Panel statt zwischen Filter-Panel und
-	 * Liste (Nutzer-Feedback 2026-09-09). */
 	private renderFilterPanel(pane: HTMLElement): void {
 		const panelBody = pane.createDiv({ cls: 'ihm-filter-panel-body' });
 
 		if (this.filtersActive()) {
-			const resetBtn = panelBody.createEl('button', { text: '✕ Filter zurücksetzen', cls: 'ihm-filter-reset-btn' });
+			const resetBtn = panelBody.createEl('button', { text: '✕ Reset filters', cls: 'ihm-filter-reset-btn' });
 			resetBtn.onclick = () => {
 				this.categoryFilter = null;
 				this.yearFilter = null;
@@ -876,7 +694,7 @@ export class IhmView extends ItemView {
 		const years = [...new Set(this.bills.map((b) => b.date.slice(0, 4)))].sort().reverse();
 		if (years.length > 1) {
 			const yearSelect = panelBody.createEl('select');
-			yearSelect.createEl('option', { text: 'Gesamter Zeitraum', value: '' });
+			yearSelect.createEl('option', { text: 'All time', value: '' });
 			for (const y of years) yearSelect.createEl('option', { text: y, value: y });
 			yearSelect.value = this.yearFilter ?? '';
 			yearSelect.onchange = () => {
@@ -886,10 +704,8 @@ export class IhmView extends ItemView {
 		}
 
 		const catSelect = panelBody.createEl('select');
-		catSelect.createEl('option', { text: 'Alle Kategorien', value: '' });
-		for (const c of this.categoryData!.categories) {
-			catSelect.createEl('option', { text: `${c.emoji} ${c.label}`, value: c.id });
-		}
+		catSelect.createEl('option', { text: 'All categories', value: '' });
+		for (const c of this.categoryData!.categories) catSelect.createEl('option', { text: `${c.emoji} ${c.label}`, value: c.id });
 		catSelect.value = this.categoryFilter ?? '';
 		catSelect.onchange = () => {
 			this.categoryFilter = catSelect.value || null;
@@ -898,11 +714,11 @@ export class IhmView extends ItemView {
 
 		const sortSelect = panelBody.createEl('select');
 		const sortOptions: { value: BillSort; label: string }[] = [
-			{ value: 'date-desc', label: 'Datum ↓ (neueste)' },
-			{ value: 'date-asc', label: 'Datum ↑ (älteste)' },
-			{ value: 'amount-desc', label: 'Betrag ↓' },
-			{ value: 'amount-asc', label: 'Betrag ↑' },
-			{ value: 'title-asc', label: 'Titel A–Z' },
+			{ value: 'date-desc', label: 'Date ↓ (newest)' },
+			{ value: 'date-asc', label: 'Date ↑ (oldest)' },
+			{ value: 'amount-desc', label: 'Amount ↓' },
+			{ value: 'amount-asc', label: 'Amount ↑' },
+			{ value: 'title-asc', label: 'Title A–Z' },
 		];
 		for (const o of sortOptions) sortSelect.createEl('option', { text: o.label, value: o.value });
 		sortSelect.value = this.billSort;
@@ -913,10 +729,10 @@ export class IhmView extends ItemView {
 
 		const groupSelect = panelBody.createEl('select');
 		const groupOptions: { value: BillGroupBy; label: string }[] = [
-			{ value: 'none', label: 'Nicht gruppiert' },
-			{ value: 'month', label: 'Nach Monat' },
-			{ value: 'category', label: 'Nach Kategorie' },
-			{ value: 'payer', label: 'Nach Bezahlt von' },
+			{ value: 'none', label: 'Not grouped' },
+			{ value: 'month', label: 'By month' },
+			{ value: 'category', label: 'By category' },
+			{ value: 'payer', label: 'By payer' },
 		];
 		for (const o of groupOptions) groupSelect.createEl('option', { text: o.label, value: o.value });
 		groupSelect.value = this.billGroupBy;
@@ -926,27 +742,21 @@ export class IhmView extends ItemView {
 		};
 	}
 
-	/** Bulk-Kategoriewechsel — der einzige Bulk-Fall, den der Nutzer
-	 * angefragt hat (2026-09-09); bewusst kein Bulk-Löschen (zu riskant ohne
-	 * expliziten Wunsch). Bleibt sichtbar solange `bulkMode` aktiv ist (auch
-	 * bei 0 Auswahl) — sonst gäbe es nach Abwählen aller Karten keinen
-	 * sichtbaren Weg mehr, den Auswahlmodus zu verlassen (kein Toggle-Button
-	 * mehr seit Longpress-Einstieg). */
+	/** Bulk category change only (no bulk delete). Stays visible with zero
+	 * selection so the mode can always be left. */
 	private renderBulkBar(pane: HTMLElement): void {
 		if (!this.bulkMode) return;
 		const bar = pane.createDiv({ cls: 'ihm-bulk-bar' });
-		bar.createSpan({ text: `${this.selectedBillIds.size} ausgewählt` });
+		bar.createSpan({ text: `${this.selectedBillIds.size} selected` });
 		const catSelect = bar.createEl('select');
-		catSelect.createEl('option', { text: 'Kategorie ändern…', value: '' });
-		for (const c of this.categoryData!.categories) {
-			catSelect.createEl('option', { text: `${c.emoji} ${c.label}`, value: c.id });
-		}
+		catSelect.createEl('option', { text: 'Change category…', value: '' });
+		for (const c of this.categoryData!.categories) catSelect.createEl('option', { text: `${c.emoji} ${c.label}`, value: c.id });
 		catSelect.value = '';
 		catSelect.disabled = this.selectedBillIds.size === 0;
 		catSelect.onchange = () => {
 			if (catSelect.value) void this.bulkChangeCategory(catSelect.value);
 		};
-		bar.createEl('button', { text: 'Fertig' }).onclick = () => {
+		bar.createEl('button', { text: 'Done' }).onclick = () => {
 			this.bulkMode = false;
 			this.selectedBillIds.clear();
 			this.render();
@@ -954,36 +764,23 @@ export class IhmView extends ItemView {
 	}
 
 	private renderFab(pane: HTMLElement): void {
-		const fabRow = pane.createDiv({ cls: 'ihm-fab-row' });
-		const fab = fabRow.createEl('button', { cls: 'ihm-fab', attr: { 'aria-label': 'Neuer Beleg' }, text: '+' });
+		const fab = pane.createDiv({ cls: 'ihm-fab-row' }).createEl('button', { cls: 'ihm-fab', attr: { 'aria-label': 'New bill' }, text: '+' });
 		fab.onclick = () => this.openCreateForm();
 	}
 
-	/** "für: alle" wenn owers === alle Mitglieder (Regelfall bei Haushalts-
-	 * Belegen), sonst Namen aufgezählt (max. 3, Rest als "+N") — Info fehlte
-	 * bisher komplett in der Karte (Nutzer-Feedback 2026-09-09). */
+	/** "all" when the owers are exactly the active members. */
 	private owersLabel(bill: IhmBill): string {
-		if (bill.owerIhmIds.length === this.members.length) return 'alle';
+		const active = this.activeMembers();
+		if (active.length > 0 && bill.owerIhmIds.length === active.length && active.every((m) => bill.owerIhmIds.includes(m.ihmId))) return 'all';
 		const names = bill.owerIhmIds.map((id) => this.members.find((m) => m.ihmId === id)?.name ?? '?');
 		if (names.length <= 3) return names.join(', ');
 		return `${names.slice(0, 3).join(', ')} +${names.length - 3}`;
 	}
 
-	/** Tap → Bearbeiten-Formular öffnen (wie PayForMe/übliche Finance-Apps,
-	 * Nutzerfrage 2026-09-09) statt eigener ✏️-Schaltfläche — spart die
-	 * Aktionen-Spalte, mehr Platz für Titel/Meta. Löschen sitzt jetzt im
-	 * Formular selbst (siehe `renderBillFormPane`/`bill-form.ts`). Gilt für
-	 * die GANZE Karte (nicht nur Zeile 1, Nutzer-Feedback 2026-09-09) —
-	 * Ausnahme: Klicks auf den Kategorie-Select in Zeile 2 werden ignoriert,
-	 * sonst würde jede Kategorie-Änderung zusätzlich das Formular öffnen.
-	 * Longpress (~500ms) startet stattdessen den Auswahlmodus für Bulk-
-	 * Aktionen und markiert die gedrückte Karte — läuft über Pointer Events,
-	 * damit Maus (gedrückt halten) UND Touch (Longpress) einheitlich
-	 * funktionieren. Render passiert erst bei Loslassen, NICHT beim
-	 * Timer-Ablauf — sonst zerstört der Re-Render das Karten-DOM mitten in
-	 * der noch gehaltenen Geste (Ursache eines Desktop-Bugs, bei dem
-	 * Longpress mit Maus gar nicht ankam). Im Auswahlmodus toggelt ein Tap
-	 * stattdessen nur die Auswahl dieser Karte. */
+	/** Tap → edit form; long-press (~500ms) → selection mode. Pointer events
+	 * unify mouse and touch. Rendering happens on pointerup, not when the
+	 * timer fires — a re-render mid-press would destroy the pressed card.
+	 * The category select in the card is excluded. */
 	private bindCardPress(card: HTMLElement, bill: IhmBill): void {
 		let pressTimer: number | undefined;
 		let longPressFired = false;
@@ -1024,6 +821,7 @@ export class IhmView extends ItemView {
 		card.addEventListener('pointercancel', clearPress);
 	}
 
+	/** Three rows: icon + title + amount / payer > owers + category / date. */
 	private renderBillCard(list: HTMLElement, bill: IhmBill): void {
 		const isEditing = this.editingBill !== 'new' && this.editingBill !== null && this.editingBill.ihmId === bill.ihmId;
 		const card = list.createDiv({ cls: isEditing ? 'ihm-bill-card is-editing' : 'ihm-bill-card' });
@@ -1031,28 +829,19 @@ export class IhmView extends ItemView {
 		const payer = this.members.find((m) => m.ihmId === bill.payerIhmId)?.name ?? '?';
 		const catDef = categoryDef(categoryOf(bill), this.categoryData!.categories);
 
-		// Zeile 1: Icon/Checkbox (je nach Auswahlmodus) + Titel + Betrag.
-		// Keine Aktionen-Spalte mehr (Tap/Longpress auf der ganzen Karte,
-		// siehe `bindCardPress`) — Betrag optisch klar vom Titel/Meta abgesetzt.
 		const row = card.createDiv({ cls: 'ihm-bill-row' });
-
 		if (this.bulkMode) {
 			const checkbox = row.createEl('input', { cls: 'ihm-bill-checkbox', attr: { type: 'checkbox', tabindex: '-1' } });
 			checkbox.checked = this.selectedBillIds.has(bill.ihmId);
 		} else {
 			row.createDiv({ cls: 'ihm-bill-icon', text: catDef.emoji });
 		}
-
 		row.createDiv({ cls: 'ihm-bill-title', text: bill.what, attr: { title: bill.what } });
 		row.createDiv({ cls: 'ihm-bill-amount', text: formatCurrency(bill.amount, this.currency) });
 
-		// Zeile 2: bezahlt von + Beteiligte + Kategorie-Chip.
 		const metaRow = card.createDiv({ cls: 'ihm-bill-meta-row' });
-		// "bezahlt von > beteiligt" statt ausgeschriebenem Fließtext —
-		// kompakter (Nutzer-Feedback 2026-09-09).
 		const metaText = `${payer} > ${this.owersLabel(bill)}`;
 		metaRow.createDiv({ cls: 'ihm-bill-meta', text: metaText, attr: { title: metaText } });
-
 		if (!this.bulkMode) {
 			const catSelect = metaRow.createEl('select', { cls: 'ihm-cat-select' });
 			for (const c of this.categoryData!.categories) {
@@ -1062,33 +851,26 @@ export class IhmView extends ItemView {
 			catSelect.onchange = () => this.correctCategory(bill, catSelect.value);
 		}
 
-		// Zeile 3: Datum allein (Nutzer-Feedback 2026-09-09: 2 statt 1
-		// Unterzeile, Datum nach unten).
-		card.createDiv({ cls: 'ihm-bill-date', text: bill.date });
+		card.createDiv({ cls: 'ihm-bill-date', text: formatDate(bill.date) });
 	}
 
-	/** `wide === false`: Formular ersetzt die ganze Tab-Fläche, bekommt einen
-	 * Zurück-Pfeil (nur Icon statt Text, Nutzer-Feedback 2026-09-09) + Swipe-
-	 * nach-rechts-zum-Zurückgehen (siehe `bindSwipeBack`). `wide === true`:
-	 * Formular sitzt im Detail-Panel neben der Liste, kein Zurück nötig
-	 * (Liste bleibt sichtbar). */
+	/** Narrow: form replaces the tab with a back arrow + swipe-back. Wide:
+	 * form sits in the detail pane next to the list. */
 	private renderBillFormPane(container: HTMLElement, showBack: boolean): void {
 		const goBack = () => {
 			this.queueSlide('back');
 			this.editingBill = null;
 			this.render();
 		};
-
-		if (showBack) {
-			this.bindSwipeBack(container, goBack);
-		}
+		if (showBack) this.bindSwipeBack(container, goBack);
 
 		const project = this.currentProject();
 		if (!project || !this.categoryData) return;
 		const existing = this.editingBill === 'new' || this.editingBill === null ? undefined : this.editingBill;
 
 		renderBillForm(container, {
-			members: this.members,
+			members: this.formMembers(existing),
+			memberColor: (id) => memberColorFor(this.members, id),
 			categories: this.categoryData.categories,
 			trainingDocs: this.categoryData.trainingDocs,
 			currency: this.currency,
@@ -1112,11 +894,8 @@ export class IhmView extends ItemView {
 		});
 	}
 
+	/** Slide only in the narrow layout; in the split the list stays put. */
 	private openCreateForm(): void {
-		// Slide nur im schmalen Layout — im breiten Tablet-Split bleibt die
-		// Liste stehen, nur das Detail-Panel bekommt neuen Inhalt; die ganze
-		// Fläche (Liste+Formular) mitanimieren sah dort sinnlos aus
-		// (Nutzer-Feedback 2026-09-09).
 		if (!this.isWide) this.queueSlide('forward');
 		this.editingBill = 'new';
 		this.render();
@@ -1128,15 +907,9 @@ export class IhmView extends ItemView {
 		this.render();
 	}
 
-	/** Native `categoryid` für einen lokalen Kategorie-Wert auflösen — liest
-	 * primär `BillCategoryDef.nativeCategoryId` (types.ts), das entweder vom
-	 * Nutzer manuell gesetzt wurde (IHM-Server-Fork: Auswahl aus den 10 festen
-	 * `COSPEND_GLOBAL_CATEGORIES` in den Settings) oder beim ersten Cospend-
-	 * Push automatisch entsteht (echte, freie Projekt-Kategorie, siehe
-	 * `CospendClient.pushCategory()`). Ersetzt die alte statische
-	 * `LOCAL_TO_COSPEND_ID`-Tabelle (categorize/cospend-category-map.ts), die
-	 * nur die 8 Default-Kategorien kannte und jede selbst angelegte Kategorie
-	 * beim Push zu "Unclassified" degradierte (Bug, siehe docs/bugs.md). */
+	/** Native category id for a local category: from BillCategoryDef (set in
+	 * settings for the IHM fork, or by a previous Cospend push); for Cospend
+	 * an unmapped category is pushed on first use. */
 	private async resolveNativeCategoryId(project: IhmProjectConfig, client: ExpenseClient, categoryId: string): Promise<number | null | undefined> {
 		if (!project.nativeCategorySupport) return undefined;
 		const cat = this.categoryData?.categories.find((c) => c.id === categoryId);
@@ -1146,10 +919,6 @@ export class IhmView extends ItemView {
 			const pushed = await client.pushCategory(cat);
 			if (pushed != null) {
 				cat.nativeCategoryId = pushed;
-				// `backendType` ist hier schon auf 'cospend' verengt (siehe if
-				// oben) — isForkCompatible ist also immer `false`, positive
-				// Cospend-eigene ids dürfen hier nicht wie Fork-ids behandelt
-				// werden (siehe sync/category-store.ts `sanitizeNativeId()`).
 				const result = await this.plugin.categoryStore.mergeAndSave(project.id, this.categoryData!, false);
 				this.categoryData = result.data;
 				if (result.diverged) this.notifySyncConflict();
@@ -1188,12 +957,14 @@ export class IhmView extends ItemView {
 			project.lastPayerIhmId = result.payerIhmId;
 			await this.plugin.saveSettings();
 		}
-		new Notice('Beleg angelegt');
+		new Notice('Bill created');
 		if (!this.isWide) this.queueSlide('back');
 		this.editingBill = null;
 		await this.sync(true);
 	}
 
+	/** The form never changes the bill type, so it is carried over — IHM
+	 * resets `bill_type` to Expense when the field is missing. */
 	private async updateBillFromForm(project: IhmProjectConfig, bill: IhmBill, result: BillFormResult): Promise<void> {
 		const client = createExpenseClient(project, this.app, this.plugin.settings.categoryStoreFolder);
 		const nativeCategoryId = await this.resolveNativeCategoryId(project, client, result.categoryId);
@@ -1204,6 +975,7 @@ export class IhmView extends ItemView {
 			amount: result.amount,
 			date: result.date,
 			externalLink: bill.externalLink,
+			billType: bill.billType,
 			nativeCategoryId,
 			paymentModeId: result.paymentModeId,
 		});
@@ -1211,40 +983,31 @@ export class IhmView extends ItemView {
 		bill.paymentModeId = result.paymentModeId;
 		if (nativeCategoryId !== undefined) bill.nativeCategoryId = nativeCategoryId;
 		await this.persistCategoryChoice(bill, result.categoryId);
-		new Notice('Beleg aktualisiert');
+		new Notice('Bill updated');
 		if (!this.isWide) this.queueSlide('back');
 		this.editingBill = null;
 		await this.sync(true);
 	}
 
-	/** Bestätigung läuft inline im Formular selbst ab (siehe `bill-form.ts`
-	 * `onDelete`-Zweistufen-Button, Nutzer-Feedback 2026-09-09: kein
-	 * Popup-Modal mehr) — hier also kein ConfirmModal mehr, direkt löschen. */
 	private async deleteBill(bill: IhmBill): Promise<void> {
 		const project = this.currentProject();
 		if (!project) return;
 		try {
 			const client = createExpenseClient(project, this.app, this.plugin.settings.categoryStoreFolder);
 			await client.deleteBill(bill.ihmId);
-			new Notice('Beleg gelöscht');
-			// Falls gerade im Formular offen — sonst würde nach dem Sync ein
-			// Formular für eine nicht mehr existierende Bill hängen bleiben.
+			new Notice('Bill deleted');
 			if (this.editingBill !== 'new' && this.editingBill?.ihmId === bill.ihmId) {
 				if (!this.isWide) this.queueSlide('back');
 				this.editingBill = null;
 			}
 			await this.sync(true);
 		} catch (e) {
-			console.error('ihm-tracker: Löschen fehlgeschlagen', e);
-			new Notice(`Löschen fehlgeschlagen — ${e instanceof Error ? e.message : String(e)}`);
+			console.error('ihm-tracker: delete failed', e);
+			new Notice(`Delete failed — ${e instanceof Error ? e.message : String(e)}`);
 		}
 	}
 
-	/** Persistiert eine Kategorie-Wahl im CategoryStore (Trainingsdoc +
-	 * Bill-Override) — reiner Vault-Save, KEIN Server-Roundtrip. Aufrufer, die
-	 * den Server-Wert selbst schon setzen (createBill/updateBill mit
-	 * `nativeCategoryId` im selben Request), nutzen diese Methode statt
-	 * `correctCategory()`, um keinen zweiten überflüssigen PUT zu senden. */
+	/** Vault-only persistence (training doc + bill override), no server call. */
 	private async persistCategoryChoice(bill: IhmBill, categoryId: string): Promise<void> {
 		bill.categoryId = categoryId;
 		const now = new Date().toISOString();
@@ -1252,10 +1015,7 @@ export class IhmView extends ItemView {
 		const local: ProjectCategoryData = {
 			...this.categoryData!,
 			trainingDocs: [...this.categoryData!.trainingDocs, doc],
-			billOverrides: {
-				...this.categoryData!.billOverrides,
-				[String(bill.ihmId)]: { categoryId, updatedAt: now },
-			},
+			billOverrides: { ...this.categoryData!.billOverrides, [String(bill.ihmId)]: { categoryId, updatedAt: now } },
 		};
 		const isForkCompatible = this.currentProject()?.backendType === 'ihatemoney';
 		const result = await this.plugin.categoryStore.mergeAndSave(this.selectedProjectId!, local, isForkCompatible);
@@ -1263,65 +1023,51 @@ export class IhmView extends ItemView {
 		if (result.diverged) this.notifySyncConflict();
 	}
 
-	/** Zeigt eine `Notice`, wenn `mergeAndSave()` erkannt hat, dass die
-	 * Kategorie-Vault-Datei seit dem letzten eigenen Zugriff von woanders
-	 * verändert wurde (anderes Gerät/anderer Client) — das Mergen selbst
-	 * läuft trotzdem still automatisch weiter (kein Blocker), nur Transparenz
-	 * für den Nutzer statt eines unbemerkten Merges (Nutzerwunsch, siehe
-	 * `docs/ideas.md`). */
 	private notifySyncConflict(): void {
-		new Notice('Kategorie-Daten wurden mit einer zwischenzeitlichen Änderung von einem anderen Gerät zusammengeführt.');
+		new Notice('Category data was merged with changes from another device.');
 	}
 
-	/** Manuelle Korrektur aus dem Kategorie-Dropdown in der Belegliste (Bill
-	 * ist bereits serverseitig synct) — persistiert lokal UND pusht bei
-	 * Fork-Support zusätzlich einen `updateBill()` fürs native
-	 * `categoryid`-Feld (MoneyBuster/Cospend-Kompatibilität, siehe
-	 * server-patch/). */
+	/** Pushes the native category to the server (best effort, vault mapping
+	 * stays the source of truth). Carries the bill type, see updateBillFromForm. */
+	private async pushNativeCategory(project: IhmProjectConfig, client: ExpenseClient, bill: IhmBill, categoryId: string): Promise<number | null | undefined> {
+		const nativeId = await this.resolveNativeCategoryId(project, client, categoryId);
+		await client.updateBill(bill.ihmId, {
+			what: bill.what,
+			payerIhmId: bill.payerIhmId,
+			owerIhmIds: bill.owerIhmIds,
+			amount: bill.amount,
+			date: bill.date,
+			externalLink: bill.externalLink,
+			billType: bill.billType,
+			paymentModeId: bill.paymentModeId,
+			nativeCategoryId: nativeId,
+		});
+		bill.nativeCategoryId = nativeId;
+		return nativeId;
+	}
+
+	/** Category dropdown on a card. */
 	private async correctCategory(bill: IhmBill, newCategoryId: string): Promise<void> {
 		await this.persistCategoryChoice(bill, newCategoryId);
 		this.render();
 
 		const project = this.currentProject();
-		if (project?.nativeCategorySupport) {
-			try {
-				const client = createExpenseClient(project, this.app, this.plugin.settings.categoryStoreFolder);
-				const cospendId = await this.resolveNativeCategoryId(project, client, newCategoryId);
-				await client.updateBill(bill.ihmId, {
-					what: bill.what,
-					payerIhmId: bill.payerIhmId,
-					owerIhmIds: bill.owerIhmIds,
-					amount: bill.amount,
-					date: bill.date,
-					externalLink: bill.externalLink,
-					nativeCategoryId: cospendId,
-				});
-				bill.nativeCategoryId = cospendId;
-				// Feedback statt stillem "Unclassified" (Nutzer-Feedback 2026-09-10):
-				// eine SELBST angelegte Kategorie ohne native Entsprechung
-				// (`cat.nativeCategoryId` nie gesetzt — beim IHM-Fork nur über den
-				// Settings-Dropdown "Cospend-Entsprechung" möglich, da der Fork
-				// anders als echtes Cospend keine freien Kategorien kennt) wird
-				// zwangsläufig als `null`/Unclassified gepusht. `other`
-				// ("Sonstiges") ist davon ausgenommen — dort ist `null` die
-				// GEWOLLTE Entsprechung, kein Konfigurationsfehler.
-				if (cospendId === null && newCategoryId !== OTHER_CATEGORY_ID && project.backendType === 'ihatemoney') {
-					new Notice(
-						'Kategorie lokal gesetzt, aber ohne Server-Entsprechung — in den Projekt-Einstellungen unter "Kategorien" eine Zuordnung wählen, damit sie am Server ankommt.',
-					);
-				}
-			} catch (e) {
-				console.error('ihm-tracker: natives categoryid-Update fehlgeschlagen', e);
-				new Notice('Kategorie lokal gespeichert, Server-Sync (categoryid) fehlgeschlagen');
+		if (!project?.nativeCategorySupport) return;
+		try {
+			const client = createExpenseClient(project, this.app, this.plugin.settings.categoryStoreFolder);
+			const nativeId = await this.pushNativeCategory(project, client, bill, newCategoryId);
+			// The IHM fork has no free categories: a custom category needs a
+			// manual mapping in settings, otherwise it lands as "unclassified".
+			if (nativeId === null && newCategoryId !== OTHER_CATEGORY_ID && project.backendType === 'ihatemoney') {
+				new Notice('Category saved locally, but it has no server mapping — assign one under Settings → Categories so it reaches the server.');
 			}
+		} catch (e) {
+			console.error('ihm-tracker: native category update failed', e);
+			new Notice('Category saved locally, server sync of the category failed');
 		}
 	}
 
-	/** Bulk-Kategoriewechsel für die aktuell ausgewählten Belege — sequentiell
-	 * statt parallel, da `persistCategoryChoice()` jedes Mal frisch von Disk
-	 * mergt (`mergeAndSave`, siehe sync/category-store.ts); parallel liefe
-	 * Gefahr, dass zwei gleichzeitige Merges denselben Disk-Stand lesen und
-	 * sich gegenseitig überschreiben. Ein Render am Ende statt pro Bill. */
+	/** Sequential on purpose: each persist re-reads and merges the vault file. */
 	private async bulkChangeCategory(categoryId: string): Promise<void> {
 		const project = this.currentProject();
 		const ids = [...this.selectedBillIds];
@@ -1332,36 +1078,20 @@ export class IhmView extends ItemView {
 			if (project?.nativeCategorySupport) {
 				try {
 					const client = createExpenseClient(project, this.app, this.plugin.settings.categoryStoreFolder);
-					const cospendId = await this.resolveNativeCategoryId(project, client, categoryId);
-					await client.updateBill(bill.ihmId, {
-						what: bill.what,
-						payerIhmId: bill.payerIhmId,
-						owerIhmIds: bill.owerIhmIds,
-						amount: bill.amount,
-						date: bill.date,
-						externalLink: bill.externalLink,
-						nativeCategoryId: cospendId,
-					});
-					bill.nativeCategoryId = cospendId;
+					await this.pushNativeCategory(project, client, bill, categoryId);
 				} catch (e) {
-					console.error('ihm-tracker: bulk categoryid-Update fehlgeschlagen', bill.ihmId, e);
+					console.error('ihm-tracker: bulk native category update failed', bill.ihmId, e);
 				}
 			}
 		}
-		new Notice(`Kategorie für ${ids.length} Belege geändert`);
+		new Notice(`Category changed for ${ids.length} bills`);
 		this.selectedBillIds.clear();
 		this.bulkMode = false;
 		this.render();
 	}
 
-	/** Legt einen Ausgleichsvorschlag (`settleBalances()`, Ausgleich-Tab)
-	 * direkt als Reimbursement-Beleg an (Nutzerwunsch 2026-09-09: "direkt aus
-	 * den vorgeschlagenen Ausgleichszahlungen einen neuen Eintrag
-	 * generieren") — `bill_type: 'reimbursement'` statt `'expense'`, damit
-	 * IHM diese Zahlung korrekt als Saldenausgleich zählt (nicht als
-	 * gemeinsame Ausgabe, die selbst wieder Anteile erzeugt). Payer = wer
-	 * zahlt (`tx.fromIhmId`), einziger `ower` = wer bekommt (`tx.toIhmId`) —
-	 * IHM verbucht Reimbursements 1:1 zwischen genau diesen beiden. */
+	/** Creates a settlement proposal as a reimbursement bill (payer = who
+	 * pays, single ower = who receives). */
 	private async createSettlementBill(tx: SettlementTransaction): Promise<void> {
 		const project = this.currentProject();
 		if (!project) return;
@@ -1370,36 +1100,26 @@ export class IhmView extends ItemView {
 		try {
 			const client = createExpenseClient(project, this.app, this.plugin.settings.categoryStoreFolder);
 			await client.createBill({
-				what: `Ausgleichszahlung: ${fromName} > ${toName}`,
+				what: `Settlement: ${fromName} > ${toName}`,
 				payerIhmId: tx.fromIhmId,
 				owerIhmIds: [tx.toIhmId],
 				amount: tx.amount,
 				date: new Date().toISOString().slice(0, 10),
 				billType: 'reimbursement',
 			});
-			new Notice(`Ausgleichszahlung angelegt: ${fromName} > ${toName} (${formatCurrency(tx.amount, this.currency)})`);
+			new Notice(`Settlement created: ${fromName} > ${toName} (${formatCurrency(tx.amount, this.currency)})`);
 			await this.sync(true);
 		} catch (e) {
-			new Notice(`Ausgleichszahlung fehlgeschlagen — ${e instanceof Error ? e.message : String(e)}`);
+			new Notice(`Settlement failed — ${e instanceof Error ? e.message : String(e)}`);
 		}
 	}
 
-	/** Von `settings.ts` nach Projekt-/Mitglieder-Edits gerufen (Nutzerwunsch
-	 * 2026-09-09) — resynct nur, wenn diese View gerade das bearbeitete
-	 * Projekt anzeigt, sonst No-Op (kein unnötiger Roundtrip für ein anderes
-	 * offenes Projekt). */
+	/** Called from settings after project/member edits. */
 	public refreshIfProject(projectId: string): void {
 		if (this.selectedProjectId === projectId) void this.sync(true);
 	}
 
-	/** `silent`: kein Erfolgs-Notice (für den periodischen Hintergrund-Sync,
-	 * siehe onOpen — soll nicht alle paar Minuten aufblinken). Fehler werden
-	 * immer angezeigt, auch silent, da actionable. Rendert NUR beim
-	 * allerersten Sync sofort (zeigt "Lade…", siehe `render()`) — ein
-	 * Refresh mit schon vorhandenen Daten (z.B. nach Anlegen/Bearbeiten)
-	 * lässt die alte Ansicht stehen, bis die neuen Daten da sind, statt
-	 * zwischendurch einmal alles leerzuräumen (Nutzer-Feedback 2026-09-09:
-	 * wirkte wie ein unsauberer kompletter Re-Render). */
+	/** `silent`: no success notice (background sync). Errors always show. */
 	private async sync(silent = false): Promise<void> {
 		const project = this.currentProject();
 		if (!project) return;
@@ -1408,35 +1128,13 @@ export class IhmView extends ItemView {
 		if (isInitialLoad) this.render();
 		try {
 			const client = createExpenseClient(project, this.app, this.plugin.settings.categoryStoreFolder);
-			// Mindestdauer fürs Sync-Icon-Feedback (Nutzerwunsch 2026-09-10:
-			// "Spin startet kurz, bricht aber gleich wieder ab") — ein Sync gegen
-			// den lokalen Docker-Testserver/ein kleines Projekt ist oft schneller
-			// als eine sichtbare Umdrehung (0.8s, siehe `.ihm-icon-btn.is-syncing`
-			// in styles.css), der Button wurde dadurch mitten in der Drehung vom
-			// Abschluss-`render()` hart durch einen frischen (nicht drehenden)
-			// ersetzt — wirkte wie ein Abbruch statt eines sauberen Endes.
+			// 500ms floor so the sync icon completes at least a visible spin.
 			const [[members, bills, currency, paymentModes]] = await Promise.all([
-				Promise.all([
-					client.fetchMembers(),
-					client.fetchBills(),
-					client.fetchCurrency(),
-					client.fetchPaymentModes?.() ?? Promise.resolve([]),
-				]),
+				Promise.all([client.fetchMembers(), client.fetchBills(), client.fetchCurrency(), client.fetchPaymentModes?.() ?? Promise.resolve([])]),
 				new Promise<void>((resolve) => window.setTimeout(resolve, 500)),
 			]);
 
-			// Auto-Erkennung `nativeCategorySupport` (Bug, gemeldet 2026-09-10:
-			// Kategorie-PULL vom Server lief schon, aber eine im Plugin gesetzte
-			// Kategorie kam nie als `categoryid` am IHM-Fork an — "Unclassified").
-			// Root Cause: `project.nativeCategorySupport` wurde bisher NUR über den
-			// Settings-Button "Verbindung testen" gesetzt (`correctCategory()`
-			// pusht nur, wenn dieses Flag `true` ist) — ein Projekt, das vor
-			// diesem Button existierte oder bei dem er nie geklickt wurde, blieb
-			// für immer `false`/`undefined`. `fetchBills()` verrät das Feld aber
-			// SCHON (jedes Bill trägt `nativeCategoryId !== undefined`, sobald der
-			// Server das Feld überhaupt kennt, unabhängig vom Wert) — kein
-			// zusätzlicher Server-Call nötig, einfach aus den gerade geladenen
-			// Bills ableiten statt auf den manuellen Klick zu warten.
+			// Any bill carrying the field (even null) proves server support.
 			if (!project.nativeCategorySupport && bills.some((b) => b.nativeCategoryId !== undefined)) {
 				project.nativeCategorySupport = true;
 				await this.plugin.saveSettings();
@@ -1444,14 +1142,9 @@ export class IhmView extends ItemView {
 
 			let categoryData = await this.plugin.categoryStore.load(project.id, project.backendType === 'ihatemoney');
 
-			// Auto-Import einer nativ gesetzten, dem Plugin noch unbekannten
-			// Kategorie (gemeldet 2026-09-10) — z.B. Cospends automatisch pro
-			// Projekt geseedete Default-Kategorien (Grocery/Restaurant/...), die
-			// nie über dieses Plugin gepusht wurden und deshalb keine lokale
-			// `nativeCategoryId`-Entsprechung haben. Sammelt erst ALLE fehlenden
-			// ids über alle Bills (ein Katalog-Fetch + EIN `mergeAndSave()` statt
-			// pro Bill), löst sie danach unten im normalen Zuordnungs-Loop aus dem
-			// jetzt aktualisierten `categoryData` auf.
+			// Native categories set by other clients (Cospend web, MoneyBuster)
+			// that no local category maps to yet: repair a known default's
+			// mapping if possible, otherwise import as a new local category.
 			const unresolvedNativeIds = new Set<number>();
 			for (const bill of bills) {
 				if (categoryData.billOverrides[String(bill.ihmId)]) continue;
@@ -1467,28 +1160,13 @@ export class IhmView extends ItemView {
 					for (const nativeId of unresolvedNativeIds) {
 						const native = catalog.find((c) => c.id === nativeId);
 						if (!native) continue;
-						// Reparieren statt duplizieren (Bug, gemeldet 2026-09-10):
-						// `DEFAULT_CATEGORIES` mappt 7 der Default-Kategorien schon
-						// fest auf genau diese `COSPEND_GLOBAL_CATEGORIES`-ids (z.B.
-						// health→-6). Ist die lokale Kategorie mit dieser bekannten
-						// Default-id noch vorhanden, aber ihre `nativeCategoryId`
-						// fehlt (z.B. durch den `backendType`-Sanitize-Bug, siehe
-						// docs/bugs.md), die BESTEHENDE Kategorie reparieren statt
-						// eine neue (englisch benannte) Dublette anzulegen — sonst
-						// landen "Gesundheit"+"Health"/"Lebensmittel"+"Grocery"
-						// nebeneinander in der Auswahl.
 						const knownDefaultId = DEFAULT_CATEGORIES.find((c) => c.nativeCategoryId === nativeId)?.id;
 						const existingLocal = knownDefaultId ? categoryData.categories.find((c) => c.id === knownDefaultId) : undefined;
 						if (existingLocal) {
 							existingLocal.nativeCategoryId = nativeId;
 							repaired.push(existingLocal);
 						} else {
-							// EIGENE Id-Konstruktion statt `newCategoryId()` (das nutzt
-							// einen `Date.now()`-Suffix — bei mehreren Imports im selben
-							// Sync-Batch, synchron in derselben Millisekunde, könnten
-							// zwei ids kollidieren). `native.id` ist innerhalb EINES
-							// Projekt-Katalogs bereits eindeutig, also deterministisch
-							// direkt daraus ableiten.
+							// Deterministic id: native ids are unique per project catalog.
 							imported.push({ id: `native-${native.id}`, label: native.label, emoji: native.emoji || '📦', keywords: [], nativeCategoryId: native.id });
 						}
 					}
@@ -1499,34 +1177,28 @@ export class IhmView extends ItemView {
 						if (result.diverged) this.notifySyncConflict();
 						if (this.plugin.settings.showSyncNotifications) {
 							const labels = [...repaired, ...imported].map((c) => c.label).join(', ');
-							new Notice(`Kategorie${repaired.length + imported.length > 1 ? 'n' : ''} mit Server abgeglichen: ${labels}`);
+							new Notice(`Categories matched with server: ${labels}`);
 						}
 					}
 				} catch (e) {
-					console.error('ihm-tracker: Kategorie-Katalog konnte nicht geladen werden', e);
+					console.error('ihm-tracker: could not load native category catalog', e);
 				}
 			}
 
+			const knownIds = new Set(categoryData.categories.map((c) => c.id));
 			for (const bill of bills) {
 				const override = categoryData.billOverrides[String(bill.ihmId)];
-				if (override) {
+				if (override && knownIds.has(override.categoryId)) {
 					bill.categoryId = override.categoryId;
 					continue;
 				}
-				// Kategorie direkt am Server gesetzt (Cospend-Weboberfläche/
-				// MoneyBuster, nicht über dieses Plugin) — Rückkanal für den
-				// bisher nur einseitig gebauten Push-Pfad (`resolveNativeCategoryId()`),
-				// gemeldet 2026-09-10: ohne lokalen Override wurde `nativeCategoryId`
-				// vom Server bisher komplett ignoriert, `classify()` überschrieb die
-				// serverseitig gesetzte Kategorie mit dem Auto-Vorschlag. Nur ein
-				// reiner Anzeige-Fallback — wird NICHT als `billOverride` persistiert
-				// (kein Trainingsdaten-Zufluss aus Fremd-Clients, absichtlich einfach
-				// gehalten, siehe docs/ideas.md).
-				const nativeMatch =
-					bill.nativeCategoryId != null
-						? categoryData.categories.find((c) => c.nativeCategoryId === bill.nativeCategoryId)
-						: undefined;
+				// Server-set category wins over the classifier (display only,
+				// not persisted as an override — no training data from other
+				// clients).
+				const nativeMatch = bill.nativeCategoryId != null ? categoryData.categories.find((c) => c.nativeCategoryId === bill.nativeCategoryId) : undefined;
 				bill.categoryId = nativeMatch ? nativeMatch.id : classify(bill.what, categoryData.trainingDocs, categoryData.categories);
+				// Training docs may still point at a deleted category.
+				if (!knownIds.has(bill.categoryId)) bill.categoryId = OTHER_CATEGORY_ID;
 			}
 
 			this.members = members;
@@ -1534,10 +1206,10 @@ export class IhmView extends ItemView {
 			this.categoryData = categoryData;
 			this.currency = currency;
 			this.paymentModes = paymentModes;
-			if (!silent && this.plugin.settings.showSyncNotifications) new Notice(`IHM Tracker: ${bills.length} Belege geladen`);
+			if (!silent && this.plugin.settings.showSyncNotifications) new Notice(`IHM Tracker: ${bills.length} bills loaded`);
 		} catch (e) {
-			console.error('ihm-tracker sync failed', e);
-			new Notice(`IHM Tracker: Sync fehlgeschlagen — ${e instanceof Error ? e.message : String(e)}`);
+			console.error('ihm-tracker: sync failed', e);
+			new Notice(`IHM Tracker: sync failed — ${e instanceof Error ? e.message : String(e)}`);
 		} finally {
 			this.loading = false;
 			this.render();
@@ -1547,7 +1219,7 @@ export class IhmView extends ItemView {
 	private async doPdfExport(project: IhmProjectConfig, bills: IhmBill[], opts: ExportOptionsResult): Promise<void> {
 		if (!this.categoryData) return;
 		try {
-			const filterSummary = opts.scope === 'filtered' ? this.currentFilterSummary() : 'Zeitraum: gesamt · Kategorie: alle';
+			const filterSummary = opts.scope === 'filtered' ? this.currentFilterSummary() : 'All time · All categories';
 			const path = await exportBillsPdf(this.app, opts.folder, {
 				projectName: project.name,
 				filterSummary,
@@ -1556,10 +1228,10 @@ export class IhmView extends ItemView {
 				members: this.members,
 				currency: this.currency,
 			});
-			new Notice(`PDF gespeichert: ${path}`);
+			new Notice(`PDF saved: ${path}`);
 		} catch (e) {
-			console.error('ihm-tracker: PDF-Export fehlgeschlagen', e);
-			new Notice(`PDF-Export fehlgeschlagen — ${e instanceof Error ? e.message : String(e)}`);
+			console.error('ihm-tracker: PDF export failed', e);
+			new Notice(`PDF export failed — ${e instanceof Error ? e.message : String(e)}`);
 		}
 	}
 
@@ -1573,10 +1245,10 @@ export class IhmView extends ItemView {
 				members: this.members,
 				currency: this.currency,
 			});
-			new Notice(`Excel gespeichert: ${path}`);
+			new Notice(`Excel saved: ${path}`);
 		} catch (e) {
-			console.error('ihm-tracker: Excel-Export fehlgeschlagen', e);
-			new Notice(`Excel-Export fehlgeschlagen — ${e instanceof Error ? e.message : String(e)}`);
+			console.error('ihm-tracker: Excel export failed', e);
+			new Notice(`Excel export failed — ${e instanceof Error ? e.message : String(e)}`);
 		}
 	}
 }

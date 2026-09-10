@@ -7,34 +7,29 @@ import { saveBinaryToVault, timestampSlug } from './export-utils';
 
 export interface ExcelExportOptions {
 	projectName: string;
-	bills: IhmBill[]; // bereits gefiltert vom Aufrufer
+	bills: IhmBill[]; // already filtered by the caller
 	categories: BillCategoryDef[];
 	members: IhmMemberRaw[];
 	currency: string;
 }
 
-/** Zwei Sheets: "Belege" (Rohdaten, eine Zeile pro Bill) + "Kategorien"
- * (Summe pro Kategorie) — analog der CSV-Struktur aus dem
- * ihatemoney-dashboard-Vorbild (`exportCategoryCsv`), aber als echtes .xlsx
- * mit mehreren Blättern statt Einzel-CSV. */
+/** Two sheets: "Bills" (one row per bill) and "Categories" (sum per category).
+ * Amounts stay numeric so spreadsheets can sum/sort; the currency is in the
+ * column header. */
 export async function exportBillsExcel(app: App, folder: string, opts: ExcelExportOptions): Promise<string> {
 	const catLabel = (id: string) => opts.categories.find((c) => c.id === id)?.label ?? id;
 	const memberName = (id: number) => opts.members.find((m) => m.ihmId === id)?.name ?? `#${id}`;
 
-	// Betrag bleibt eine Zahl (keine formatierte Währungs-Zeichenkette) —
-	// Excel/LibreOffice sollen weiter summieren/sortieren können. Die Währung
-	// steht stattdessen im Spaltentitel (Nutzerwunsch 2026-09-10: Mehrwährung
-	// auch im Export, siehe docs/ideas.md).
-	const amountHeader = `Betrag (${opts.currency})`;
-	const sumHeader = `Summe (${opts.currency})`;
+	const amountHeader = `Amount (${opts.currency})`;
+	const sumHeader = `Total (${opts.currency})`;
 	const billRows = opts.bills.map((b) => ({
-		Datum: b.date,
-		Titel: b.what,
-		Kategorie: catLabel(categoryOf(b)),
-		'Bezahlt von': memberName(b.payerIhmId),
+		Date: b.date,
+		Title: b.what,
+		Category: catLabel(categoryOf(b)),
+		'Paid by': memberName(b.payerIhmId),
 		[amountHeader]: b.amount,
-		Schuldner: b.owerIhmIds.map(memberName).join(', '),
-		Typ: b.billType === 'expense' ? 'Ausgabe' : 'Ausgleich',
+		'Split between': b.owerIhmIds.map(memberName).join(', '),
+		Type: b.billType === 'expense' ? 'Expense' : 'Reimbursement',
 	}));
 
 	const byCat = new Map<string, number>();
@@ -42,13 +37,11 @@ export async function exportBillsExcel(app: App, folder: string, opts: ExcelExpo
 		const cat = catLabel(categoryOf(b));
 		byCat.set(cat, (byCat.get(cat) ?? 0) + b.amount);
 	}
-	const catRows = [...byCat.entries()]
-		.sort((a, b) => b[1] - a[1])
-		.map(([Kategorie, sum]) => ({ Kategorie, [sumHeader]: sum }));
+	const catRows = [...byCat.entries()].sort((a, b) => b[1] - a[1]).map(([Category, sum]) => ({ Category, [sumHeader]: sum }));
 
 	const wb = XLSX.utils.book_new();
-	XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(billRows), 'Belege');
-	XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(catRows), 'Kategorien');
+	XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(billRows), 'Bills');
+	XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(catRows), 'Categories');
 
 	const bytes = XLSX.write(wb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
 	const filename = `${opts.projectName.replace(/[^a-z0-9äöüß]+/gi, '_')}_Export_${timestampSlug()}.xlsx`;

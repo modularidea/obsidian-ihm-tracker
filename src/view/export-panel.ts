@@ -24,18 +24,14 @@ function vaultFolderPaths(app: App): string[] {
 	return ['/', ...new Set(paths)].sort();
 }
 
-/** Export-Bildschirm inline statt Modal (Nutzer-Feedback 2026-09-09: "da eh
- * nochmal ein Screen kommt" — ein "Exportieren"-Eintrag im Options-Menü statt
- * getrennter "Als PDF"/"Als Excel"-Einträge, Dateiformat wird hier gewählt).
- * Kein natives OS-Save-Dialog — siehe export/export-utils.ts, warum
- * Vault-Speichern der einzige auf iOS/Android zuverlässige Weg ist; der
- * Ordner bleibt aber frei wählbar statt fest aus den Settings. */
+/** Inline export screen (format, scope, target folder inside the vault). No
+ * native save dialog — see export/export-utils.ts. */
 export function renderExportPanel(app: App, container: HTMLElement, opts: ExportPanelOptions): void {
 	let format: ExportFormat = 'pdf';
 	let scope: ExportScope = 'filtered';
 	let folder = opts.defaultFolder;
 
-	container.createEl('h3', { text: 'Exportieren' });
+	container.createEl('h3', { text: 'Export' });
 
 	new Setting(container).setName('Format').addDropdown((dd) => {
 		dd.addOption('pdf', 'PDF');
@@ -44,16 +40,16 @@ export function renderExportPanel(app: App, container: HTMLElement, opts: Export
 	});
 
 	new Setting(container)
-		.setName('Belege')
-		.setDesc(`Gefiltert: ${opts.filterSummary}`)
+		.setName('Bills')
+		.setDesc(`Filtered: ${opts.filterSummary}`)
 		.addDropdown((dd) => {
-			dd.addOption('filtered', 'Aktuelle Filterung');
-			dd.addOption('all', 'Alle Belege');
+			dd.addOption('filtered', 'Current filter');
+			dd.addOption('all', 'All bills');
 			dd.setValue(scope).onChange((v) => (scope = v as ExportScope));
 		});
 
 	const datalistId = 'ihm-export-folder-options';
-	new Setting(container).setName('Ordner im Vault').addText((text) => {
+	new Setting(container).setName('Folder in vault').addText((text) => {
 		text.inputEl.setAttribute('list', datalistId);
 		text.setValue(folder).onChange((v) => (folder = v));
 	});
@@ -61,8 +57,8 @@ export function renderExportPanel(app: App, container: HTMLElement, opts: Export
 	for (const path of vaultFolderPaths(app)) datalist.createEl('option', { value: path });
 
 	const buttons = container.createDiv({ cls: 'ihm-modal-buttons' });
-	buttons.createEl('button', { text: 'Abbrechen' }).onclick = () => opts.onCancel();
-	buttons.createEl('button', { text: 'Exportieren', cls: 'mod-cta' }).onclick = () => {
+	buttons.createEl('button', { text: 'Cancel' }).onclick = () => opts.onCancel();
+	buttons.createEl('button', { text: 'Export', cls: 'mod-cta' }).onclick = () => {
 		opts.onSubmit({ format, scope, folder: folder.trim() || opts.defaultFolder });
 	};
 }

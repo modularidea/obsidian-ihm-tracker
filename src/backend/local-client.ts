@@ -4,22 +4,16 @@ import { IhmMemberRaw, IhmBillCreate } from '../ihm-api/client';
 import type { ExpenseClient } from './expense-client';
 import { memberStats } from '../stats/aggregate';
 
-// "Lokale Projekte" (Nutzerwunsch 2026-09-10, docs/ideas.md Variante B):
-// KEIN Server — Belege/Mitglieder leben in genau EINER Vault-JSON-Datei,
-// analog `sync/category-store.ts`. Implementiert `ExpenseClient` wie die
-// echten Backends, damit `view/ihm-view.ts`/`view/stats-tabs.ts` etc.
-// UNVERÄNDERT bleiben (die kennen nur `IhmBill`/`IhmMemberRaw`, keinen
-// Unterschied ob die Daten vom Server oder aus einer lokalen Datei kommen).
-//
-// `vault.adapter.write()` statt `vault.create()`/`vault.modify()` — gleicher
-// Grund wie in `sync/category-store.ts` `save()`: umgeht das TOCTOU-Race über
-// Obsidians (verzögerten) Vault-Datei-Index (siehe dortiger Kommentar,
-// Bug-Historie in docs/bugs.md).
+// Server-less project: bills and members live in one vault JSON file next to
+// the category store. Implements ExpenseClient so the UI needs no special
+// case. Uses `vault.adapter` for the same index-lag reasons as CategoryStore.
 
 interface LocalMemberEntry {
 	ihmId: number;
 	name: string;
 	weight: number;
+	/** Mirrors IHM: a member with bills is deactivated, not deleted. */
+	activated?: boolean;
 }
 
 interface LocalBillEntry {
@@ -57,13 +51,12 @@ export class LocalClient implements ExpenseClient {
 		return normalizePath(`${this.folder}/local-project-${this.projectId}.json`);
 	}
 
+	/** A missing file is a fresh project; a corrupt file throws so the next
+	 * save cannot silently overwrite it. */
 	private async load(): Promise<LocalProjectData> {
-		try {
-			const raw = await this.app.vault.adapter.read(this.path());
-			return JSON.parse(raw) as LocalProjectData;
-		} catch {
-			return emptyData(this.defaultCurrency);
-		}
+		const path = this.path();
+		if (!(await this.app.vault.adapter.exists(path))) return emptyData(this.defaultCurrency);
+		return JSON.parse(await this.app.vault.adapter.read(path)) as LocalProjectData;
 	}
 
 	private async ensureFolder(): Promise<void> {
@@ -89,23 +82,15 @@ export class LocalClient implements ExpenseClient {
 		return (await this.load()).currency || this.defaultCurrency;
 	}
 
-	/** Kein Wire-Format, kein anderer Client liest diese Datei — die Frage
-	 * "natives Kategorie-Feld?" stellt sich für ein rein lokales Projekt
-	 * nicht. */
 	async probeNativeCategorySupport(): Promise<boolean> {
 		return false;
 	}
 
 	async fetchMembers(): Promise<IhmMemberRaw[]> {
 		const data = await this.load();
-		const bills: IhmBill[] = data.bills.map(toIhmBill);
-		const { paid, share } = memberStats(bills, data.members.map((m) => ({ ihmId: m.ihmId, name: m.name, weight: m.weight, balance: 0 })));
-		return data.members.map((m) => ({
-			ihmId: m.ihmId,
-			name: m.name,
-			weight: m.weight,
-			balance: (paid.get(m.ihmId) ?? 0) - (share.get(m.ihmId) ?? 0),
-		}));
+		const members = data.members.map((m) => ({ ihmId: m.ihmId, name: m.name, weight: m.weight, balance: 0, activated: m.activated ?? true }));
+		const { paid, share } = memberStats(data.bills.map(toIhmBill), members);
+		return members.map((m) => ({ ...m, balance: (paid.get(m.ihmId) ?? 0) - (share.get(m.ihmId) ?? 0) }));
 	}
 
 	async fetchBills(): Promise<IhmBill[]> {
@@ -115,15 +100,7 @@ export class LocalClient implements ExpenseClient {
 	async createBill(bill: IhmBillCreate): Promise<number> {
 		const data = await this.load();
 		const id = data.nextBillId++;
-		data.bills.push({
-			ihmId: id,
-			what: bill.what,
-			payerIhmId: bill.payerIhmId,
-			owerIhmIds: bill.owerIhmIds,
-			amount: bill.amount,
-			date: bill.date,
-			billType: bill.billType ?? 'expense',
-		});
+		data.bills.push(toEntry(id, bill));
 		await this.save(data);
 		return id;
 	}
@@ -132,15 +109,7 @@ export class LocalClient implements ExpenseClient {
 		const data = await this.load();
 		const idx = data.bills.findIndex((b) => b.ihmId === ihmBillId);
 		if (idx === -1) return;
-		data.bills[idx] = {
-			ihmId: ihmBillId,
-			what: bill.what,
-			payerIhmId: bill.payerIhmId,
-			owerIhmIds: bill.owerIhmIds,
-			amount: bill.amount,
-			date: bill.date,
-			billType: bill.billType ?? 'expense',
-		};
+		data.bills[idx] = toEntry(ihmBillId, bill);
 		await this.save(data);
 	}
 
@@ -150,10 +119,17 @@ export class LocalClient implements ExpenseClient {
 		await this.save(data);
 	}
 
+	/** Re-adding the name of a deactivated member reactivates it (like IHM). */
 	async createMember(name: string): Promise<number> {
 		const data = await this.load();
+		const inactive = data.members.find((m) => m.activated === false && m.name === name);
+		if (inactive) {
+			inactive.activated = true;
+			await this.save(data);
+			return inactive.ihmId;
+		}
 		const id = data.nextMemberId++;
-		data.members.push({ ihmId: id, name, weight: 1 });
+		data.members.push({ ihmId: id, name, weight: 1, activated: true });
 		await this.save(data);
 		return id;
 	}
@@ -167,9 +143,27 @@ export class LocalClient implements ExpenseClient {
 
 	async deleteMember(ihmMemberId: number): Promise<void> {
 		const data = await this.load();
-		data.members = data.members.filter((m) => m.ihmId !== ihmMemberId);
+		const referenced = data.bills.some((b) => b.payerIhmId === ihmMemberId || b.owerIhmIds.includes(ihmMemberId));
+		if (referenced) {
+			const member = data.members.find((m) => m.ihmId === ihmMemberId);
+			if (member) member.activated = false;
+		} else {
+			data.members = data.members.filter((m) => m.ihmId !== ihmMemberId);
+		}
 		await this.save(data);
 	}
+}
+
+function toEntry(ihmId: number, bill: IhmBillCreate): LocalBillEntry {
+	return {
+		ihmId,
+		what: bill.what,
+		payerIhmId: bill.payerIhmId,
+		owerIhmIds: bill.owerIhmIds,
+		amount: bill.amount,
+		date: bill.date,
+		billType: bill.billType ?? 'expense',
+	};
 }
 
 function toIhmBill(b: LocalBillEntry): IhmBill {

@@ -1,24 +1,21 @@
 import { BillCategoryDef, OTHER_CATEGORY_ID } from '../types';
 
-// Port von haushalt_app/haushub/lib/models/bill_category.dart
-// (kDefaultBillCategories) — gleiche ids/labels/keywords, damit ein
-// CSV-Export aus der Flutter-App 1:1 in dieses Plugin importierbar ist (und
-// umgekehrt), siehe docs/konzept.md "CSV-Kompatibilität".
+// Seed categories for a new project. ids are stable (CSV round-trips with the
+// haushub app rely on them); labels can be renamed in settings. The keyword
+// lists are tuned for German-speaking households (shop names) plus generic
+// English terms. `nativeCategoryId` = matching Cospend/MoneyBuster global id.
 
 export const DEFAULT_CATEGORIES: BillCategoryDef[] = [
 	{
 		id: 'groceries',
-		nativeCategoryId: -1, // Cospend-Global-Kategorie (siehe categorize/cospend-category-map.ts)
-		label: 'Lebensmittel',
+		nativeCategoryId: -1,
+		label: 'Groceries',
 		emoji: '🛒',
 		keywords: [
-			'supermarkt', 'markt', 'rewe', 'edeka', 'aldi', 'lidl', 'netto',
+			'supermarkt', 'supermarket', 'groceries', 'markt', 'rewe', 'edeka', 'aldi', 'lidl', 'netto',
 			'kaufland', 'penny', 'dm', 'rossmann', 'real', 'tegut', 'denns',
 			'alnatura', 'spar', 'billa', 'hofer', 'migros', 'coop', 'norma',
 			'nahkauf', 'wochenmarkt',
-			// Lebensmittel-Oberbegriffe/Produkte — ergänzt zu den reinen
-			// Ladennamen oben, da Belegtitel oft den Einkaufsinhalt statt/
-			// zusätzlich zum Laden nennen (z.B. "Karotten" statt "Rewe").
 			'gemüse', 'obst', 'frisches obst', 'salat', 'karotte', 'karotten',
 			'tomate', 'tomaten', 'kartoffel', 'kartoffeln', 'zwiebel', 'zwiebeln',
 			'gurke', 'paprika', 'brokkoli', 'zucchini', 'apfel', 'äpfel',
@@ -32,74 +29,70 @@ export const DEFAULT_CATEGORIES: BillCategoryDef[] = [
 	},
 	{
 		id: 'restaurant',
-		nativeCategoryId: -12, // Cospend-Global-Kategorie (siehe categorize/cospend-category-map.ts)
+		nativeCategoryId: -12,
 		label: 'Restaurant',
 		emoji: '🍽️',
 		keywords: [
-			'restaurant', 'café', 'imbiss', 'pizza', 'pizzeria', 'burger',
-			'sushi', 'bar', 'kneipe', 'döner', 'bistro', 'bäckerei',
+			'restaurant', 'café', 'cafe', 'imbiss', 'pizza', 'pizzeria', 'burger',
+			'sushi', 'bar', 'kneipe', 'döner', 'bistro', 'bäckerei', 'takeaway', 'delivery',
 			'lieferando', 'wolt', 'uber eats', 'mcdonalds', 'burger king',
 		],
 	},
 	{
 		id: 'transport',
-		nativeCategoryId: -14, // Cospend-Global-Kategorie (siehe categorize/cospend-category-map.ts)
+		nativeCategoryId: -14,
 		label: 'Transport',
 		emoji: '🚗',
 		keywords: [
-			'bahn', 'db', 'uber', 'taxi', 'bus', 'tram', 'u-bahn', 's-bahn',
-			'sprit', 'tanken', 'benzin', 'diesel', 'parken', 'flixbus',
+			'bahn', 'db', 'uber', 'taxi', 'bus', 'tram', 'u-bahn', 's-bahn', 'train', 'fuel',
+			'sprit', 'tanken', 'benzin', 'diesel', 'parken', 'parking', 'flixbus',
 			'fahrkarte', 'ticket', 'sixt', 'nextbike', 'öbb', 'oebb', 'sbb',
 		],
 	},
 	{
 		id: 'housing',
-		nativeCategoryId: -3, // Cospend-Global-Kategorie (siehe categorize/cospend-category-map.ts)
-		label: 'Haushalt',
+		nativeCategoryId: -3,
+		label: 'Housing',
 		emoji: '🏠',
 		keywords: [
-			'miete', 'nebenkosten', 'kaution', 'strom', 'stadtwerke', 'gas',
+			'miete', 'rent', 'nebenkosten', 'kaution', 'strom', 'electricity', 'stadtwerke', 'gas',
 			'internet', 'telekom', 'vodafone', 'o2', 'congstar', 'möbel',
 			'ikea', 'rundfunkbeitrag',
 		],
 	},
 	{
 		id: 'leisure',
-		nativeCategoryId: -5, // Cospend-Global-Kategorie (siehe categorize/cospend-category-map.ts)
-		label: 'Freizeit',
+		nativeCategoryId: -5,
+		label: 'Leisure',
 		emoji: '🎉',
 		keywords: [
-			'kino', 'konzert', 'event', 'party', 'spiel', 'steam', 'netflix',
+			'kino', 'cinema', 'konzert', 'concert', 'event', 'party', 'spiel', 'steam', 'netflix',
 			'spotify', 'disney+', 'amazon prime', 'hobby', 'sport', 'fitness',
 			'gym', 'fitx', 'mcfit', 'schwimmbad',
 		],
 	},
 	{
 		id: 'health',
-		nativeCategoryId: -6, // Cospend-Global-Kategorie (siehe categorize/cospend-category-map.ts)
-		label: 'Gesundheit',
+		nativeCategoryId: -6,
+		label: 'Health',
 		emoji: '💊',
 		keywords: [
-			'arzt', 'apotheke', 'medikament', 'zahnarzt', 'versicherung',
+			'arzt', 'doctor', 'apotheke', 'pharmacy', 'medikament', 'zahnarzt', 'dentist', 'versicherung',
 			'krankenkasse', 'physiotherapie',
 		],
 	},
 	{
 		id: 'purchases',
-		nativeCategoryId: -10, // Cospend-Global-Kategorie (siehe categorize/cospend-category-map.ts)
-		label: 'Anschaffungen',
+		nativeCategoryId: -10,
+		label: 'Purchases',
 		emoji: '🛍️',
-		keywords: ['anschaffung', 'gerät', 'elektronik', 'saturn', 'mediamarkt'],
+		keywords: ['anschaffung', 'gerät', 'elektronik', 'electronics', 'saturn', 'mediamarkt'],
 	},
-	{ id: OTHER_CATEGORY_ID, label: 'Sonstiges', emoji: '📦', keywords: [] },
+	{ id: OTHER_CATEGORY_ID, label: 'Other', emoji: '📦', keywords: [] },
 ];
 
-/** Erzeugt eine neue, kollisionsfreie Kategorie-id aus einem Label — genutzt
- * beim manuellen Anlegen in den Settings UND beim Auto-Import einer nativ
- * (Cospend-Weboberfläche/MoneyBuster) gesetzten Kategorie in `view/ihm-view.ts`
- * `sync()`. Hier statt in `settings.ts`, damit `view/` es importieren kann
- * ohne einen Zirkel-Import zu `settings.ts` (das seinerseits `IhmView`
- * importiert) aufzumachen. */
+/** Collision-free category id from a label (settings "add category"). Lives
+ * here rather than in settings.ts so view/ can import it without a cycle. */
 export function newCategoryId(label: string): string {
 	const stripped = label
 		.toLowerCase()
@@ -108,5 +101,5 @@ export function newCategoryId(label: string): string {
 		.filter((ch) => ch.codePointAt(0)! < 0x0300 || ch.codePointAt(0)! > 0x036f)
 		.join('');
 	const slug = stripped.replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
-	return `${slug || 'kategorie'}_${Date.now().toString(36)}`;
+	return `${slug || 'category'}_${Date.now().toString(36)}`;
 }

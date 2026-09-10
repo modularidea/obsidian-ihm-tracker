@@ -1,14 +1,7 @@
 import { App, normalizePath } from 'obsidian';
 
-// Gemeinsame "in-Vault-speichern"-Logik für PDF- und Excel-Export.
-//
-// Warum in den Vault statt ein Browser-Download? Obsidian Mobile hat kein
-// `<a download>`/Blob-Save wie ein normaler Browser-Tab — Downloads aus einer
-// WebView heraus sind auf iOS/Android unzuverlässig bis gar nicht verfügbar.
-// Der plattformübergreifend zuverlässige Weg ist `vault.createBinary()`: die
-// Datei landet als normale Vault-Datei, die der Nutzer über den
-// Datei-Explorer öffnen/teilen/exportieren kann (Rechtsklick → "Reveal in
-// Finder"/"Share" — Obsidian-natives Verhalten, auf allen Plattformen gleich).
+// Exports are saved INTO the vault: Obsidian Mobile has no reliable browser
+// download, a vault file can be opened/shared on every platform.
 
 export async function ensureFolder(app: App, folder: string): Promise<void> {
 	const path = normalizePath(folder);
@@ -16,16 +9,13 @@ export async function ensureFolder(app: App, folder: string): Promise<void> {
 	try {
 		await app.vault.createFolder(path);
 	} catch (e) {
-		// Race mit einem parallelen Save in denselben Ordner (z.B.
-		// CategoryStore, siehe sync/category-store.ts ensureFolder) — Ordner
-		// existiert jetzt, kein echter Fehler.
+		// Lost a race with a parallel save into the same folder.
 		if (!(await app.vault.adapter.exists(path))) throw e;
 	}
 }
 
-/** Hängt " (2)", " (3)", ... vor die Dateiendung an, falls der Name schon
- * existiert — verhindert stilles Überschreiben bei zweitem Export am selben
- * Tag (Dateiname enthält nur ein Datum, kein Uhrzeit-Suffix). */
+/** Appends " (2)", " (3)", … so a second export on the same day does not
+ * overwrite the first (file names only carry a date). */
 async function uniqueFilePath(app: App, folder: string, filename: string): Promise<string> {
 	const dot = filename.lastIndexOf('.');
 	const stem = dot === -1 ? filename : filename.slice(0, dot);
@@ -42,10 +32,7 @@ async function uniqueFilePath(app: App, folder: string, filename: string): Promi
 export async function saveBinaryToVault(app: App, folder: string, filename: string, data: ArrayBuffer): Promise<string> {
 	await ensureFolder(app, folder);
 	const path = await uniqueFilePath(app, folder, filename);
-	// `adapter.writeBinary()` statt `vault.createBinary()` — idempotent auf
-	// Dateisystemebene, kein Race mit Obsidians (ggf. hinterherhinkendem)
-	// Vault-Index (siehe sync/category-store.ts `save()` für den Bug, den
-	// genau dieses Muster verursacht hat).
+	// adapter-level write: no race with Obsidian's lagging file index.
 	await app.vault.adapter.writeBinary(path, data);
 	return path;
 }

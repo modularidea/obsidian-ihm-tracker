@@ -1,39 +1,29 @@
 import { requestUrl } from 'obsidian';
-import { IhmBill, IhmBillType, IhmMemberBalance } from '../types';
+import { IhmBill, IhmBillType } from '../types';
 import type { ExpenseClient } from '../backend/expense-client';
 import { COSPEND_GLOBAL_CATEGORIES } from '../categorize/cospend-category-map';
 
-// IHateMoney REST-Client. Port der Kernlogik aus
-// haushalt_app/haushub/lib/services/ihatemoney_service.dart, aber auf
-// Obsidians `requestUrl()` statt `package:http` — DAS ist der entscheidende
-// Unterschied zum bestehenden ihatemoney-dashboard-Tool (reines Browser-JS):
-// `requestUrl()` läuft in Obsidian Desktop über Electron/Node und auf
-// Mobile über die native Plattform-HTTP-Schicht, NICHT über
-// `fetch()`/`XMLHttpRequest` — CORS-Header des IHM-Servers spielen daher
-// keine Rolle. Der im Dashboard nötige Workaround (Klick-Link-Fallback für
-// Server ohne `Access-Control-Allow-Origin`) entfällt hier komplett, auch
-// für selbstgehostete NAS-Instanzen ohne CORS-Konfiguration.
-//
-// API-Doku: https://github.com/spiral-project/ihatemoney/blob/main/docs/api.md
-// Feldnamen für POST/PUT bills folgen dem WTForms-Schema (`payer`,
-// `payed_for`) — asymmetrisch zum GET-Response-Schema (`payer_id`, `owers`),
-// verifiziert im haushub-Projekt gegen die echte API (siehe dortiger
-// Kommentar in ihatemoney_service.dart `_billBody`).
+// IHateMoney REST client on top of Obsidian's requestUrl() (native HTTP on
+// desktop and mobile, so server CORS headers don't matter).
+// API: https://github.com/spiral-project/ihatemoney/blob/main/docs/api.md
+// POST/PUT bodies use the WTForms field names (`payer`, `payed_for`), GET
+// responses use `payer_id`/`owers`.
 
+/** Member DTO shared by all backends. `activated: false` = removed while
+ * still referenced by bills (IHM/Cospend keep such members around). */
 export interface IhmMemberRaw {
 	ihmId: number;
 	name: string;
 	weight: number;
 	balance: number;
+	activated: boolean;
 }
 
-// Wire-Format-Typen für `res.json` (Obsidian typisiert `RequestUrlResponse.json`
-// als `any` — diese Interfaces geben dem Response-Body einmal einen Typ, statt
-// bei jedem einzelnen Property-Zugriff unten `as X` zu casten.
 interface IhmMemberJson {
 	id: number;
 	name: string;
 	weight?: number;
+	activated?: boolean;
 }
 
 interface IhmStatsEntryJson {
@@ -66,19 +56,13 @@ export interface IhmBillCreate {
 	amount: number;
 	date: string; // yyyy-mm-dd
 	externalLink?: string;
-	/** Wire-Feld `categoryid` (siehe server-patch/) — nur senden, wenn der
-	 * verbundene Server das Feld unterstützt (Project.nativeCategorySupport);
-	 * bei `undefined` wird der Key im Body komplett weggelassen (stock-IHM
-	 * ignoriert unbekannte Formularfelder klaglos, das Weglassen ist trotzdem
-	 * sauberer als ein Feld zu senden, das nie ankommt). */
+	/** Wire field `categoryid` (server fork / Cospend). `undefined` omits the
+	 * key entirely; `null` explicitly clears the category. */
 	nativeCategoryId?: number | null;
-	/** Fehlt → Server-Default `Expense` (WTForms `BillForm.bill_type`,
-	 * `default=BillType.EXPENSE`). Für Ausgleichszahlungen aus dem Ausgleich-
-	 * Tab explizit `'reimbursement'` setzen (siehe `ihm-view.ts`
-	 * `createSettlementBill()`). */
+	/** Omitted → server default "Expense". Must be passed on every update of
+	 * a reimbursement bill, otherwise IHM resets it to Expense. */
 	billType?: IhmBillType;
-	/** Nur Cospend (siehe backend/cospend-client.ts) — IHM ignoriert dieses
-	 * Feld (kein Wire-Feld in `billBody()` dort). */
+	/** Cospend only. */
 	paymentModeId?: number;
 }
 
@@ -98,15 +82,9 @@ export class IhateMoneyClient implements ExpenseClient {
 		private password: string,
 	) {}
 
-	private auth(): string {
-		// btoa läuft in Obsidian sowohl Desktop (Electron/Chromium) als auch
-		// Mobile (WebView) — kein Node-`Buffer` nötig, daher iOS-sicher.
-		return btoa(`${this.projectId}:${this.password}`);
-	}
-
 	private headers(): Record<string, string> {
 		return {
-			Authorization: `Basic ${this.auth()}`,
+			Authorization: `Basic ${btoa(`${this.projectId}:${this.password}`)}`,
 			'Content-Type': 'application/json',
 			Accept: 'application/json',
 		};
@@ -126,11 +104,7 @@ export class IhateMoneyClient implements ExpenseClient {
 		}
 	}
 
-	/** Liest die Projekt-Währung für die Betrag-Formatierung im Beleg-
-	 * Formular (Nutzer-Feedback 2026-09-09). `default_currency` ist bei
-	 * Projekten ohne explizite Einstellung oft `"XXX"` (ISO-4217-Reserve-Code
-	 * für "keine Währung") — dann und bei jedem sonstigen unbrauchbaren Wert
-	 * auf EUR zurückfallen, statt "XXX" anzuzeigen. */
+	/** "XXX" is IHM's "no currency" placeholder → EUR. */
 	async fetchCurrency(): Promise<string> {
 		try {
 			const res = await requestUrl({ url: this.url(''), headers: this.headers(), throw: false });
@@ -142,15 +116,9 @@ export class IhateMoneyClient implements ExpenseClient {
 		}
 	}
 
-	/** Probe, ob der Server (z.B. ein NAS-Fork mit Server-Patch, siehe
-	 * server-patch/README.md) ein natives `categoryid`-Feld unterstützt.
-	 * Erkennung: GET auf /bills, Prüfung ob das erste zurückgegebene
-	 * Bill-Objekt den Key `categoryid` TRÄGT (nicht: ob er einen Wert hat —
-	 * `null` ist ein gültiger "unklassifiziert"-Wert auf einem Fork-Server,
-	 * ein reiner Typ-Check auf den Wert würde das fälschlich als "nicht
-	 * unterstützt" werten, siehe server-patch/ Verifikation). Konservativ —
-	 * bei leerem Projekt (keine Bills) liefert die Probe `false`, auch wenn
-	 * der Server den Patch hat; das ist ok, die Probe läuft bei jedem Sync neu. */
+	/** Checks key PRESENCE on the first bill (`null` is a valid "unclassified"
+	 * value on a fork server). Empty project → false; sync() re-derives the
+	 * flag from fetched bills anyway. */
 	async probeNativeCategorySupport(): Promise<boolean> {
 		try {
 			const res = await requestUrl({ url: this.url('/bills'), headers: this.headers(), throw: false });
@@ -163,42 +131,29 @@ export class IhateMoneyClient implements ExpenseClient {
 		}
 	}
 
-	/** Kein Server-Call nötig — der Fork kennt nur die 10 festen
-	 * `COSPEND_GLOBAL_CATEGORIES` (statisch, siehe categorize/
-	 * cospend-category-map.ts), keine dynamisch anlegbaren Projekt-Kategorien
-	 * wie echtes Cospend. */
+	/** The fork only knows the fixed Cospend global categories. */
 	async fetchNativeCategories(): Promise<{ id: number; label: string; emoji: string }[]> {
 		return COSPEND_GLOBAL_CATEGORIES.map((c) => ({ id: c.id, label: c.label, emoji: c.emoji }));
 	}
 
+	/** `/members` has no balance field; balances only come from `/statistics`. */
 	async fetchMembers(): Promise<IhmMemberRaw[]> {
-		// `/members` liefert KEIN `balance`-Feld (verifiziert gegen den
-		// IHM-Upstream `models.py` `Person._to_serialize` — nur id/name/weight/
-		// activated). Echte Salden kommen ausschließlich über `/statistics`
-		// (`Project.members_stats`, verschachteltes `member`-Objekt). Bug
-		// 2026-09-09: `balance` blieb dadurch immer 0 → Personen-/Ausgleich-Tab
-		// zeigten fälschlich "ausgeglichen" trotz klar unausgeglichener Konten.
 		const [membersRes, statsRes] = await Promise.all([
 			requestUrl({ url: this.url('/members'), headers: this.headers(), throw: false }),
 			requestUrl({ url: this.url('/statistics'), headers: this.headers(), throw: false }),
 		]);
 		if (membersRes.status !== 200) throw new IhmApiError(membersRes.status, membersRes.text);
-		const list = membersRes.json as IhmMemberJson[];
 		const balanceByMemberId = new Map<number, number>();
 		if (statsRes.status === 200) {
 			for (const s of statsRes.json as IhmStatsEntryJson[]) balanceByMemberId.set(s.member.id, s.balance);
 		}
-		return list.map((m) => ({
+		return (membersRes.json as IhmMemberJson[]).map((m) => ({
 			ihmId: m.id,
 			name: m.name,
 			weight: m.weight ?? 1.0,
 			balance: balanceByMemberId.get(m.id) ?? 0,
+			activated: m.activated ?? true,
 		}));
-	}
-
-	async fetchBalances(): Promise<IhmMemberBalance[]> {
-		const members = await this.fetchMembers();
-		return members.map((m) => ({ ihmId: m.ihmId, name: m.name, weight: m.weight, balance: m.balance }));
 	}
 
 	async fetchBills(): Promise<IhmBill[]> {
@@ -207,22 +162,18 @@ export class IhateMoneyClient implements ExpenseClient {
 		const decoded = res.json as IhmBillJson[] | { bills: IhmBillJson[] };
 		const list: IhmBillJson[] = Array.isArray(decoded) ? decoded : decoded.bills;
 		return list.map((b) => {
-			const owersRaw = b.owers ?? [];
 			const billType: IhmBillType = b.bill_type === 'Reimbursement' ? 'reimbursement' : 'expense';
 			return {
 				ihmId: b.id,
 				what: b.what,
 				payerIhmId: b.payer_id,
-				owerIhmIds: owersRaw.map((o) => (typeof o === 'object' ? o.id : o)),
+				owerIhmIds: (b.owers ?? []).map((o) => (typeof o === 'object' ? o.id : o)),
 				amount: Number(b.converted_amount ?? b.amount),
 				date: b.date,
 				billType,
 				externalLink: b.external_link || undefined,
-				// 'categoryid' in b: unterscheidet "Server liefert das Feld,
-				// Wert ist null" (Fork, unklassifiziert) von "Server kennt das
-				// Feld gar nicht" (stock-IHM) — reines `b.categoryid ?? null`
-				// würde beide Fälle auf null zusammenfallen lassen und damit
-				// nativeCategorySupport implizit falsch signalisieren.
+				// Key presence distinguishes "fork, unclassified" (null) from
+				// "stock IHM, no such field" (undefined).
 				nativeCategoryId: 'categoryid' in b ? (b.categoryid ?? null) : undefined,
 			} satisfies IhmBill;
 		});
@@ -236,11 +187,8 @@ export class IhateMoneyClient implements ExpenseClient {
 			amount: bill.amount,
 			date: bill.date,
 			...(bill.externalLink ? { external_link: bill.externalLink } : {}),
-			// Nur senden, wenn der Aufrufer explizit einen Wert (inkl. `null`
-			// zum Zurücksetzen) mitgibt — siehe IhmBillCreate.nativeCategoryId.
 			...(bill.nativeCategoryId !== undefined ? { categoryid: bill.nativeCategoryId } : {}),
-			// Wire-Wert exakt `BillType.value` im Upstream-Enum (models.py) —
-			// "Expense"/"Reimbursement", nicht die lokalen kleingeschriebenen IDs.
+			// Wire value = upstream BillType enum value ("Expense"/"Reimbursement").
 			...(bill.billType ? { bill_type: bill.billType === 'reimbursement' ? 'Reimbursement' : 'Expense' } : {}),
 		};
 	}
@@ -268,6 +216,7 @@ export class IhateMoneyClient implements ExpenseClient {
 		if (res.status !== 200 && res.status !== 201) throw new IhmApiError(res.status, res.text);
 	}
 
+	/** 404 counts as success — the bill is gone either way. */
 	async deleteBill(ihmBillId: number): Promise<void> {
 		const res = await requestUrl({
 			url: this.url(`/bills/${ihmBillId}`),
@@ -275,15 +224,10 @@ export class IhateMoneyClient implements ExpenseClient {
 			headers: this.headers(),
 			throw: false,
 		});
-		// 404 zählt als Erfolg — Ziel (Bill existiert serverseitig nicht mehr)
-		// ist bereits erreicht (siehe haushub docs/bugs.md BUG-56, gleiche Logik
-		// hier übernommen).
 		if (res.status !== 200 && res.status !== 404) throw new IhmApiError(res.status, res.text);
 	}
 
-	/** Manche IHM-Endpunkte (Bill/Member anlegen) antworten mit der reinen
-	 * Zahl als Text, andere mit `{"id": ...}` — beide Formen abfangen statt
-	 * eins zu unterstellen. */
+	/** Create endpoints answer either with a bare number or `{"id": ...}`. */
 	private parseIdResponse(body: string): number {
 		const asInt = Number(body.trim());
 		if (!Number.isNaN(asInt)) return asInt;
@@ -291,15 +235,11 @@ export class IhateMoneyClient implements ExpenseClient {
 			const j = JSON.parse(body) as { id?: number | string };
 			if (j.id != null) return Number(j.id);
 		} catch {
-			/* fällt durch zu Error unten */
+			/* fall through */
 		}
-		throw new Error('IHM-Response enthielt keine parsbare id — Push-Ergebnis unsicher, breche ab statt zu raten.');
+		throw new Error('Server response contained no parsable id — aborting instead of guessing.');
 	}
 
-	/** Mitglieder-CRUD (Nutzerwunsch 2026-09-09: Mitgliederverwaltung direkt
-	 * im Plugin, siehe settings.ts) — laut offizieller API-Doku
-	 * (github.com/spiral-project/ihatemoney/blob/main/docs/api.md) vorhanden:
-	 * POST/PUT/DELETE auf `/members`. */
 	async createMember(name: string): Promise<number> {
 		const res = await requestUrl({
 			url: this.url('/members'),
@@ -323,6 +263,7 @@ export class IhateMoneyClient implements ExpenseClient {
 		if (res.status !== 200 && res.status !== 201) throw new IhmApiError(res.status, res.text);
 	}
 
+	/** IHM only deactivates a member that still has bills (see `activated`). */
 	async deleteMember(ihmMemberId: number): Promise<void> {
 		const res = await requestUrl({
 			url: this.url(`/members/${ihmMemberId}`),

@@ -2,17 +2,9 @@ import type { IhmBill, BillCategoryDef } from '../types';
 import type { IhmMemberRaw, IhmBillCreate } from '../ihm-api/client';
 import type { SettlementTransaction } from '../stats/aggregate';
 
-// Gemeinsames Interface für alle drei Backends (IHateMoney, Cospend, Local —
-// siehe types.ts ProjectBackendType). `IhmMemberRaw`/`IhmBillCreate` leben
-// bewusst weiter in `ihm-api/client.ts` (Namensgeber IHM, aber generisch
-// genug als gemeinsame DTO-Form aller drei Implementierungen — kein Grund,
-// sie zu duplizieren oder umzubenennen).
-//
-// `fetchSettlement`/`pushCategory` sind OPTIONAL: nur Backends mit einer
-// echten serverseitigen Entsprechung (Cospend) implementieren sie. Aufrufer
-// prüfen `client.fetchSettlement?.(...)` statt sich auf ein Backend zu
-// verlassen, das es nicht gibt (IHM hat keinen Ausgleich-Endpoint, siehe
-// stats/aggregate.ts `settleBalances()`-Fallback).
+// Common interface for the three backends (IHateMoney, Cospend, local).
+// Optional members exist only where the backend has a real server-side
+// counterpart; callers check `client.x?.()`.
 export interface ExpenseClient {
 	testConnection(): Promise<boolean>;
 	fetchCurrency(): Promise<string>;
@@ -25,31 +17,18 @@ export interface ExpenseClient {
 	createMember(name: string): Promise<number>;
 	updateMember(ihmMemberId: number, name: string): Promise<void>;
 	deleteMember(ihmMemberId: number): Promise<void>;
-	/** Nativer Ausgleichsplan des Servers (Cospend `/settle`) — wenn
-	 * vorhanden, nutzt der Ausgleich-Tab DAS statt `settleBalances()`
-	 * (stats/aggregate.ts, unser eigener Port für Backends ohne so einen
-	 * Endpunkt). */
+	/** Server-side settlement plan (Cospend `/settle`). Not wired into the
+	 * settle tab yet — all backends use stats/aggregate.ts settleBalances(). */
 	fetchSettlement?(): Promise<SettlementTransaction[]>;
-	/** Legt `cat` nativ auf dem Server an (Cospend: echte, freie
-	 * Projekt-Kategorie) und liefert die neue native id — oder `null`, wenn
-	 * das Backend das nicht unterstützt/fehlschlägt. Aufrufer speichert den
-	 * Rückgabewert in `BillCategoryDef.nativeCategoryId` (types.ts). */
+	/** Creates `cat` as a native project category and returns its id, or null
+	 * when unsupported/failed. Caller stores it in BillCategoryDef.nativeCategoryId. */
 	pushCategory?(cat: BillCategoryDef): Promise<number | null>;
-	/** Verfügbare Zahlungsmittel des Projekts (Cospend: Bar/Karte/Überweisung/
-	 * ... — projekteigenes Set, siehe backend/cospend-client.ts). Nur
-	 * implementiert, wo das Konzept existiert — Aufrufer (bill-form.ts)
-	 * blenden das Feld aus, wenn `undefined`/leeres Array zurückkommt. */
+	/** Project payment modes (Cospend). The bill form hides the field when
+	 * undefined/empty. */
 	fetchPaymentModes?(): Promise<PaymentMode[]>;
-	/** Katalog der nativen Kategorien des Servers/Projekts (Cospend: echte
-	 * projekteigene Kategorien inkl. der automatisch geseedeten Defaults wie
-	 * "Grocery"/"Restaurant"; IHM-Fork: die 10 festen
-	 * `COSPEND_GLOBAL_CATEGORIES`). Rückkanal für `sync()` (view/ihm-view.ts):
-	 * eine Kategorie, die direkt am Server gesetzt wurde (Cospend-
-	 * Weboberfläche/MoneyBuster, nicht über dieses Plugin) und deren
-	 * `nativeCategoryId` noch keiner lokalen `BillCategoryDef` entspricht,
-	 * wird darüber als NEUE lokale Kategorie importiert statt vom
-	 * Auto-Klassifikator überschrieben zu werden (Bug, gemeldet 2026-09-10,
-	 * siehe docs/bugs.md). */
+	/** Native category catalog (Cospend: project categories incl. its seeded
+	 * defaults; IHM fork: the fixed global list). Lets sync() import a
+	 * category that was set directly on the server by another client. */
 	fetchNativeCategories?(): Promise<{ id: number; label: string; emoji: string }[]>;
 }
 

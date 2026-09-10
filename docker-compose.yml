@@ -1,7 +1,6 @@
-# Lokales Test-Setup: Stock-IHM (offizielles Image) + Fork-IHM (server-patch/)
-# parallel, für End-to-End-Tests des Plugins gegen beide Varianten — siehe
-# docs/todos.md Phase 1. Kein Produktions-Setup (SESSION_COOKIE_SECURE=False,
-# offene Public-Project-Creation) — nur für lokale Entwicklung/Tests gedacht.
+# Local test setup: stock IHateMoney (official image) + the server-patch fork
+# side by side, plus Nextcloud with Cospend. Development only — insecure
+# defaults (open project creation, SESSION_COOKIE_SECURE=False).
 
 services:
   ihm-stock:
@@ -44,9 +43,8 @@ services:
     volumes:
       - ihm-fork-db:/database
 
-  # Nextcloud + Cospend-App, lokal zum Gegentesten der Cospend-API-Recherche
-  # (docs/ideas.md "Cospend-Support") — SQLite statt eigenem DB-Container,
-  # reicht für einen einzelnen Test-Nutzer/Test-Projekt. Kein Produktions-Setup.
+  # Nextcloud + Cospend (install the app via the admin UI after first start).
+  # SQLite is enough for one test user.
   nextcloud:
     image: nextcloud:latest
     environment:

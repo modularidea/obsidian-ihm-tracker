@@ -1,6 +1,6 @@
-import { App, Notice, PluginSettingTab, Setting } from 'obsidian';
+import { App, Notice, PluginSettingTab, Setting, normalizePath } from 'obsidian';
 import type IhmTrackerPlugin from './main';
-import { IhmProjectConfig, ProjectCategoryData, ProjectBackendType } from './types';
+import { IhmProjectConfig, OTHER_CATEGORY_ID, ProjectCategoryData, ProjectBackendType } from './types';
 import { IhmMemberRaw } from './ihm-api/client';
 import { IHM_VIEW_TYPE, IhmView } from './view/ihm-view';
 import { createExpenseClient } from './backend/create-client';
@@ -14,39 +14,17 @@ function sleep(ms: number): Promise<void> {
 
 export interface IhmTrackerSettings {
 	projects: IhmProjectConfig[];
-	/** Vault-relativer Ordner für die Kategorie-Mapping-Dateien (siehe
-	 * sync/category-store.ts) — bewusst NICHT `.obsidian/plugins/...`, damit
-	 * die Datei in jedem normalen Vault-Sync landet, auch wenn der Nutzer den
-	 * `.obsidian`-Ordner selbst vom Sync ausschließt (verbreitete Praxis).
-	 * Default beginnt mit `.` — Obsidians eigener File Explorer blendet
-	 * Ordner mit führendem Punkt standardmäßig aus (wie `.obsidian`/`.trash`),
-	 * die Datei bleibt aber ein normaler Vault-Ordner (voll sync-/lesbar),
-	 * Pfad bleibt hier änderbar. */
+	/** Vault folder for the per-project category files and local-project
+	 * files. Not under `.obsidian/` so it is included even when users exclude
+	 * that folder from sync; a leading "." hides it in the file explorer. */
 	categoryStoreFolder: string;
-	/** Automatisch synchronisieren: beim Öffnen der View + alle
-	 * `autoSyncIntervalMinutes` Minuten währenddessen sie offen ist (siehe
-	 * view/ihm-view.ts `registerInterval` — läuft nur solange die View offen
-	 * ist, kein Hintergrund-Sync danach). */
+	/** Sync on open + every N minutes while the view is open. */
 	autoSyncEnabled: boolean;
 	autoSyncIntervalMinutes: number;
-	/** Erfolgs-Notice nach Sync ("N Belege geladen") ein-/ausblenden — Fehler
-	 * werden immer angezeigt (siehe view/ihm-view.ts `sync()`), unabhängig
-	 * von dieser Einstellung, da actionable. Nutzerwunsch 2026-09-09: bei
-	 * häufigem manuellem Sync nervt die Erfolgsmeldung. */
+	/** Success notice after sync; errors always show. */
 	showSyncNotifications: boolean;
-	/** `IhmProjectConfig.id` des zuletzt in der View gewählten Projekts
-	 * (Nutzerwunsch 2026-09-10) — beim nächsten Öffnen (Obsidian-Neustart,
-	 * Plugin-Reload) wird DIESES Projekt statt immer des ersten in der Liste
-	 * vorausgewählt. `settings.ts`/`data.json`, nicht die Vault-Datei (siehe
-	 * `sync/category-store.ts`) — reine Geräte-lokale UI-Präferenz, kein
-	 * Sync-relevanter Fachzustand. */
 	lastSelectedProjectId?: string;
-	/** Wo Ribbon-Icon/Command/Deeplink die View standardmäßig öffnen
-	 * (Nutzerwunsch 2026-09-10, v.a. Mobile: rechte Sidebar öffnet dort als
-	 * schmales Slide-in-Panel statt als vollwertiger Tab neben den Notizen).
-	 * `'sidebar'` = bisheriges Verhalten (`workspace.getRightLeaf()`,
-	 * Default — keine Verhaltensänderung für bestehende Nutzer), `'tab'` =
-	 * neuer Tab im Hauptbereich (`workspace.getLeaf(true)`). */
+	/** 'sidebar' = right leaf, 'tab' = main area (better on phones). */
 	openLocation: 'sidebar' | 'tab';
 }
 
@@ -59,32 +37,20 @@ export const DEFAULT_SETTINGS: IhmTrackerSettings = {
 	openLocation: 'sidebar',
 };
 
-// Plain Text-Input statt eigenem Emoji-Picker-Widget — der ECHTE native
-// OS-Picker öffnet sich beim Fokussieren jedes normalen Textfelds von
-// selbst (macOS: Ctrl+Cmd+Space, Windows: Win+.), fügt das gewählte Emoji
-// direkt ein. Keine JS-API kann diesen Picker programmatisch öffnen (gibt's
-// nicht) — der Tooltip macht den Shortcut nur sichtbar (Nutzerwunsch
-// 2026-09-09, war vorher nicht bekannt/entdeckt).
-const EMOJI_PICKER_HINT = 'Emoji-Picker öffnen: macOS Ctrl+Cmd+Space · Windows Win+. · Mobile: Emoji-Taste der Tastatur';
+// Plain text input; the OS emoji picker opens on any text field. There is no
+// JS API to open it, so the tooltip just names the shortcut.
+const EMOJI_PICKER_HINT = 'Emoji picker: macOS Ctrl+Cmd+Space · Windows Win+. · mobile: emoji key';
+
+const STORE_FILE_PATTERN = /\/(ihm-categories-|local-project-)[^/]+\.json$/;
 
 function newProjectId(): string {
 	return `p_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
 export class IhmTrackerSettingTab extends PluginSettingTab {
-	/** Frisch angelegtes Projekt startet aufgeklappt (sonst müsste man es nach
-	 * "+ Projekt hinzufügen" erst wieder aufklappen, um Server-URL/Slug/
-	 * Passwort einzutragen) — alle anderen Projekt-Sections bleiben
-	 * eingeklappt (Nutzerwunsch 2026-09-09: bessere Übersicht). */
+	/** A freshly added project starts expanded. */
 	private justAddedProjectId: string | null = null;
-
-	/** Merkt sich, welche Projekt-Boxen der Nutzer manuell aufgeklappt hat
-	 * (Bug, gemeldet 2026-09-10: "nach einem Edit klappt die Section wieder
-	 * zu") — `display()` baut bei mehreren Aktionen (Mitglied/Kategorie/
-	 * Cospend-Projekt wählen, Verbindung trennen) die komplette Settings-Seite
-	 * neu auf; ohne dieses Set startet ein natives `<details>` beim Neubau
-	 * immer wieder geschlossen (Browser-Default), da nur `justAddedProjectId`
-	 * berücksichtigt wurde. */
+	/** display() rebuilds everything; native <details> would close again. */
 	private expandedProjectIds = new Set<string>();
 
 	constructor(
@@ -98,28 +64,25 @@ export class IhmTrackerSettingTab extends PluginSettingTab {
 		const { containerEl } = this;
 		containerEl.empty();
 
+		let pendingFolder = this.plugin.settings.categoryStoreFolder;
 		new Setting(containerEl)
-			.setName('Kategorie-Ordner im Vault')
+			.setName('Category folder in vault')
 			.setDesc(
-				'Hier liegen die ihm-categories-<projekt>.json-Dateien — synct über denselben Mechanismus wie der Rest deines Vaults. ' +
-					`Ordnername mit führendem "." (Standard) bleibt im Obsidian-Datei-Explorer versteckt, wie ${this.app.vault.configDir}/.trash — ` +
-					'funktional macht das keinen Unterschied, nur die Sichtbarkeit im Explorer.',
+				'Holds the ihm-categories-<project>.json files (and local projects) — synced like the rest of your vault. ' +
+					`A leading "." (default) hides the folder in the file explorer, like ${this.app.vault.configDir}. Existing files are moved when you change it.`,
 			)
-			.addText((text) =>
-				text
-					.setPlaceholder('.ihm-tracker')
-					.setValue(this.plugin.settings.categoryStoreFolder)
-					.onChange(async (value) => {
-						this.plugin.settings.categoryStoreFolder = value.trim() || '.ihm-tracker';
-						await this.plugin.saveSettings();
-					}),
-			);
+			.addText((text) => {
+				text.setPlaceholder('.ihm-tracker')
+					.setValue(pendingFolder)
+					.onChange((value) => (pendingFolder = value));
+				text.inputEl.addEventListener('blur', () => void this.changeCategoryFolder(pendingFolder));
+			});
 
-		new Setting(containerEl).setName('Synchronisierung').setHeading();
+		new Setting(containerEl).setName('Sync').setHeading();
 
 		new Setting(containerEl)
-			.setName('Automatisch synchronisieren')
-			.setDesc('Beim Öffnen der IHM-Ansicht + regelmäßig währenddessen sie offen ist.')
+			.setName('Auto sync')
+			.setDesc('When the view opens and periodically while it is open.')
 			.addToggle((toggle) =>
 				toggle.setValue(this.plugin.settings.autoSyncEnabled).onChange(async (value) => {
 					this.plugin.settings.autoSyncEnabled = value;
@@ -129,7 +92,7 @@ export class IhmTrackerSettingTab extends PluginSettingTab {
 			);
 
 		if (this.plugin.settings.autoSyncEnabled) {
-			new Setting(containerEl).setName('Sync-Intervall (Minuten)').addText((text) => {
+			new Setting(containerEl).setName('Sync interval (minutes)').addText((text) => {
 				text.inputEl.type = 'number';
 				text.inputEl.min = '1';
 				text.setValue(String(this.plugin.settings.autoSyncIntervalMinutes)).onChange(async (value) => {
@@ -141,8 +104,8 @@ export class IhmTrackerSettingTab extends PluginSettingTab {
 		}
 
 		new Setting(containerEl)
-			.setName('Sync-Erfolgsmeldung anzeigen')
-			.setDesc('Fehler werden immer angezeigt — betrifft nur die "N Belege geladen"-Meldung nach erfolgreichem Sync.')
+			.setName('Show sync success message')
+			.setDesc('Errors are always shown — this only affects the "N bills loaded" notice.')
 			.addToggle((toggle) =>
 				toggle.setValue(this.plugin.settings.showSyncNotifications).onChange(async (value) => {
 					this.plugin.settings.showSyncNotifications = value;
@@ -151,14 +114,12 @@ export class IhmTrackerSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
-			.setName('Öffnen in')
-			.setDesc(
-				'Wo Ribbon-Icon/Befehl/Homescreen-Shortcut die Ansicht öffnen. Seitenleiste öffnet dort auf dem Handy als schmales Panel; Tab öffnet einen vollwertigen Tab im Hauptbereich neben den Notizen.',
-			)
+			.setName('Open in')
+			.setDesc('Where the ribbon icon, command and home-screen shortcut open the view. On phones the sidebar is a narrow slide-in panel; a tab uses the full main area.')
 			.addDropdown((dropdown) =>
 				dropdown
-					.addOption('sidebar', 'Seitenleiste')
-					.addOption('tab', 'Tab im Hauptbereich')
+					.addOption('sidebar', 'Sidebar')
+					.addOption('tab', 'Main area tab')
 					.setValue(this.plugin.settings.openLocation)
 					.onChange(async (value) => {
 						this.plugin.settings.openLocation = value === 'tab' ? 'tab' : 'sidebar';
@@ -166,25 +127,52 @@ export class IhmTrackerSettingTab extends PluginSettingTab {
 					}),
 			);
 
-		new Setting(containerEl).setName('Projekte').setHeading();
+		new Setting(containerEl).setName('Projects').setHeading();
 
-		for (const project of this.plugin.settings.projects) {
-			this.renderProject(containerEl, project);
-		}
+		for (const project of this.plugin.settings.projects) this.renderProject(containerEl, project);
 
 		new Setting(containerEl)
-			.setName('Neues Projekt')
-			.setDesc('IHateMoney: eigener/fremder Server. Cospend: Nextcloud-Login. Lokal: kein Server, Belege liegen nur in der Vault-Datei.')
+			.setName('New project')
+			.setDesc('IHateMoney: your own or a hosted server. Cospend: Nextcloud login. Local: no server, bills live in a vault file.')
 			.addButton((btn) => btn.setButtonText('+ IHateMoney').onClick(() => this.addProject('ihatemoney')))
 			.addButton((btn) => btn.setButtonText('+ Cospend').onClick(() => this.addProject('cospend')))
-			.addButton((btn) => btn.setButtonText('+ Lokal').onClick(() => this.addProject('local')));
+			.addButton((btn) => btn.setButtonText('+ Local').onClick(() => this.addProject('local')));
+	}
+
+	/** Moves the plugin's own files along, otherwise category data and local
+	 * projects would silently start from scratch in the new folder. */
+	private async changeCategoryFolder(raw: string): Promise<void> {
+		const next = normalizePath(raw.trim() || '.ihm-tracker');
+		const prev = normalizePath(this.plugin.settings.categoryStoreFolder);
+		if (next === prev) return;
+		const adapter = this.app.vault.adapter;
+		let moved = 0;
+		try {
+			if (await adapter.exists(prev)) {
+				const files = (await adapter.list(prev)).files.filter((f) => STORE_FILE_PATTERN.test(`/${f}`));
+				if (files.length > 0 && !(await adapter.exists(next))) await this.app.vault.createFolder(next);
+				for (const file of files) {
+					const target = normalizePath(`${next}/${file.slice(file.lastIndexOf('/') + 1)}`);
+					if (await adapter.exists(target)) continue;
+					await adapter.rename(file, target);
+					moved++;
+				}
+			}
+		} catch (e) {
+			new Notice(`Could not move files to ${next} — ${e instanceof Error ? e.message : String(e)}`);
+			return;
+		}
+		this.plugin.settings.categoryStoreFolder = next;
+		await this.plugin.saveSettings();
+		if (moved > 0) new Notice(`Moved ${moved} file${moved === 1 ? '' : 's'} to ${next}`);
+		for (const p of this.plugin.settings.projects) this.notifyProjectChanged(p.id);
 	}
 
 	private async addProject(backendType: ProjectBackendType): Promise<void> {
 		const id = newProjectId();
 		this.plugin.settings.projects.push({
 			id,
-			name: 'Neues Projekt',
+			name: 'New project',
 			emoji: backendType === 'local' ? '📴' : '💰',
 			backendType,
 			serverUrl: backendType === 'ihatemoney' ? 'https://ihatemoney.org' : '',
@@ -196,19 +184,13 @@ export class IhmTrackerSettingTab extends PluginSettingTab {
 		this.display();
 	}
 
-	/** Stößt in jeder offenen IhmView, die gerade `projectId` anzeigt, einen
-	 * Resync an (Nutzerwunsch 2026-09-09: Änderungen an Projekt-Verbindung
-	 * oder Mitgliedern sollen nicht erst beim nächsten manuellen/periodischen
-	 * Sync ankommen). */
+	/** Re-syncs every open view that shows `projectId`. */
 	private notifyProjectChanged(projectId: string): void {
 		for (const leaf of this.app.workspace.getLeavesOfType(IHM_VIEW_TYPE)) {
 			if (leaf.view instanceof IhmView) leaf.view.refreshIfProject(projectId);
 		}
 	}
 
-	// Collapsible statt flacher Liste (Nutzerwunsch 2026-09-09: bessere
-	// Übersicht bei mehreren Projekten) — natives `<details>`/`<summary>`,
-	// kein eigener Toggle-State/JS nötig.
 	private renderProject(containerEl: HTMLElement, project: IhmProjectConfig): void {
 		const box = containerEl.createEl('details', { cls: 'ihm-project-box' });
 		if (project.id === this.justAddedProjectId) {
@@ -222,7 +204,7 @@ export class IhmTrackerSettingTab extends PluginSettingTab {
 			if (box.open) this.expandedProjectIds.add(project.id);
 			else this.expandedProjectIds.delete(project.id);
 		});
-		box.createEl('summary', { text: `${project.emoji} ${project.name || '(unbenannt)'}` });
+		box.createEl('summary', { text: `${project.emoji} ${project.name || '(unnamed)'}` });
 
 		new Setting(box).setName('Name').addText((t) =>
 			t.setValue(project.name).onChange(async (v) => {
@@ -242,15 +224,12 @@ export class IhmTrackerSettingTab extends PluginSettingTab {
 		} else if (project.backendType === 'cospend') {
 			this.renderCospendConnection(box, project);
 		} else {
-			box.createEl('p', {
-				cls: 'ihm-muted',
-				text: 'Lokales Projekt — Belege/Mitglieder liegen nur in einer Vault-Datei, kein Server nötig.',
-			});
+			box.createEl('p', { cls: 'ihm-muted', text: 'Local project — bills and members live in a vault file only, no server needed.' });
 		}
 
 		new Setting(box).addButton((btn) =>
 			btn
-				.setButtonText('Entfernen')
+				.setButtonText('Remove')
 				.setWarning()
 				.onClick(async () => {
 					this.plugin.settings.projects = this.plugin.settings.projects.filter((p) => p.id !== project.id);
@@ -259,51 +238,38 @@ export class IhmTrackerSettingTab extends PluginSettingTab {
 				}),
 		);
 
-		// Homescreen-Shortcut-Hinweis (Nutzerwunsch 2026-09-10) — zeigt die fertige,
-		// kopierbare URI statt nur abstrakt zu erklären, dass es das gibt. Nur mit
-		// echtem Projekt-Bezug sinnvoll, daher Slug/Name als Fallback statt der
-		// internen (zufälligen) `project.id`.
 		const shortcutIdentifier = project.projectId.trim() || project.name.trim();
 		if (shortcutIdentifier) {
 			const shortcutBox = box.createDiv({ cls: 'ihm-shortcut-hint' });
-			new Setting(shortcutBox).setName('Homescreen-Shortcut').setHeading();
+			new Setting(shortcutBox).setName('Home screen shortcut').setHeading();
 			shortcutBox.createEl('p', {
 				cls: 'ihm-muted',
-				text: 'Springt direkt zu diesem Projekt — z.B. als iOS-Kurzbefehl ("URL öffnen" + "Zum Home-Bildschirm mit eigenem Icon") oder über eine Android-Shortcut-App:',
+				text: 'Jumps straight to this project — e.g. as an iOS Shortcut ("Open URL" + "Add to Home Screen" with a custom icon) or via an Android shortcut app:',
 			});
-			const vaultName = this.app.vault.getName();
-			const uri = `obsidian://ihm-tracker-open?vault=${encodeURIComponent(vaultName)}&project=${encodeURIComponent(shortcutIdentifier)}&tab=bills`;
+			const uri = `obsidian://ihm-tracker-open?vault=${encodeURIComponent(this.app.vault.getName())}&project=${encodeURIComponent(shortcutIdentifier)}&tab=bills`;
 			const row = shortcutBox.createDiv({ cls: 'ihm-shortcut-uri-row' });
 			row.createEl('code', { text: uri });
-			const copyBtn = row.createEl('button', { text: 'Kopieren' });
-			copyBtn.onclick = async () => {
+			row.createEl('button', { text: 'Copy' }).onclick = async () => {
 				await navigator.clipboard.writeText(uri);
-				new Notice('URI kopiert');
+				new Notice('URI copied');
 			};
 		}
 
-		// Eigene Collapsibles statt permanent ausgeklappter Blöcke (Nutzer-
-		// Feedback 2026-09-10: "sonst verliert man schnell den Überblick") —
-		// gleiches `<details>`-Muster wie die Projekt-Box selbst, standardmäßig
-		// eingeklappt (anders als die Projekt-Box: hier gibt's kein "gerade neu
-		// angelegt"-Sonderfall, der ein Aufklappen rechtfertigen würde).
 		const membersBox = box.createEl('details', { cls: 'ihm-subsection-box' });
-		membersBox.createEl('summary', { text: 'Mitglieder' });
+		membersBox.createEl('summary', { text: 'Members' });
 		const membersContainer = membersBox.createDiv();
-		membersContainer.createEl('p', { text: 'Lade Mitglieder …' });
+		membersContainer.createEl('p', { text: 'Loading members…' });
 		void this.renderMembers(membersContainer, project);
 
 		const categoriesBox = box.createEl('details', { cls: 'ihm-subsection-box' });
-		categoriesBox.createEl('summary', { text: 'Kategorien' });
-		const categoriesContainer = categoriesBox.createDiv();
-		void this.renderCategories(categoriesContainer, project);
+		categoriesBox.createEl('summary', { text: 'Categories' });
+		void this.renderCategories(categoriesBox.createDiv(), project);
 	}
 
+	/** Re-sync on blur, not per keystroke (half-typed URL/password). */
 	private renderIhmConnection(box: HTMLElement, project: IhmProjectConfig): void {
-		// Resync erst bei `blur` statt bei jedem Tastendruck (`onChange` feuert
-		// pro Zeichen) — sonst Sync-Versuch mit halb getippter URL/Passwort.
-		new Setting(box).setName('Server-URL').addText((t) => {
-			t.setPlaceholder('https://ihatemoney.org oder https://nas.local:8000')
+		new Setting(box).setName('Server URL').addText((t) => {
+			t.setPlaceholder('https://ihatemoney.org or https://nas.local:8000')
 				.setValue(project.serverUrl)
 				.onChange(async (v) => {
 					project.serverUrl = v.trim();
@@ -311,14 +277,14 @@ export class IhmTrackerSettingTab extends PluginSettingTab {
 				});
 			t.inputEl.addEventListener('blur', () => this.notifyProjectChanged(project.id));
 		});
-		new Setting(box).setName('Projekt-Slug').addText((t) => {
+		new Setting(box).setName('Project slug').addText((t) => {
 			t.setValue(project.projectId).onChange(async (v) => {
 				project.projectId = v.trim();
 				await this.plugin.saveSettings();
 			});
 			t.inputEl.addEventListener('blur', () => this.notifyProjectChanged(project.id));
 		});
-		new Setting(box).setName('Passwort').addText((t) => {
+		new Setting(box).setName('Password').addText((t) => {
 			t.inputEl.type = 'password';
 			t.setValue(project.password).onChange(async (v) => {
 				project.password = v;
@@ -327,30 +293,26 @@ export class IhmTrackerSettingTab extends PluginSettingTab {
 			t.inputEl.addEventListener('blur', () => this.notifyProjectChanged(project.id));
 		});
 		new Setting(box).addButton((btn) =>
-			btn.setButtonText('Verbindung testen').onClick(async () => {
+			btn.setButtonText('Test connection').onClick(async () => {
 				const client = createExpenseClient(project, this.app, this.plugin.settings.categoryStoreFolder);
 				const ok = await client.testConnection();
 				if (ok) {
 					project.nativeCategorySupport = await client.probeNativeCategorySupport();
 					await this.plugin.saveSettings();
-					new Notice(`✅ Verbindung ok${project.nativeCategorySupport ? ' — natives Kategorie-Feld erkannt' : ''}`);
+					new Notice(`✅ Connection ok${project.nativeCategorySupport ? ' — native category field detected' : ''}`);
 				} else {
-					new Notice('❌ Verbindung fehlgeschlagen — Server-URL/Slug/Passwort prüfen');
+					new Notice('❌ Connection failed — check server URL, slug and password');
 				}
 			}),
 		);
 	}
 
-	/** Nextcloud Login Flow v2 statt manuellem Public-Share-Token (siehe
-	 * docs/ideas.md "Cospend-Support" für die Recherche/Verifikation gegen
-	 * einen echten Server, 2026-09-10) — Nutzer loggt sich im System-Browser
-	 * normal bei Nextcloud ein, das Plugin bekommt nur ein generiertes
-	 * App-Passwort, nie das echte Konto-Passwort. Danach automatischer
-	 * Projekt-Picker (`api-priv/projects`) statt manueller id-Eingabe. */
+	/** Nextcloud Login Flow v2: the user logs in in the system browser, the
+	 * plugin only receives an app password. Then a project picker. */
 	private renderCospendConnection(box: HTMLElement, project: IhmProjectConfig): void {
-		new Setting(box).setName('Nextcloud-Server-URL').addText((t) =>
+		new Setting(box).setName('Nextcloud server URL').addText((t) =>
 			t
-				.setPlaceholder('https://meine-nextcloud.example.com')
+				.setPlaceholder('https://my-nextcloud.example.com')
 				.setValue(project.serverUrl)
 				.onChange(async (v) => {
 					project.serverUrl = v.trim();
@@ -361,19 +323,19 @@ export class IhmTrackerSettingTab extends PluginSettingTab {
 		const connected = !!(project.cospendLoginName && project.cospendAppPassword);
 		if (!connected) {
 			new Setting(box)
-				.setDesc('Öffnet den Nextcloud-Login im Browser — das Plugin sieht dein Passwort nie, nur ein generiertes App-Passwort.')
+				.setDesc('Opens the Nextcloud login in your browser — the plugin never sees your password, only a generated app password.')
 				.addButton((btn) =>
 					btn
-						.setButtonText('Mit Nextcloud verbinden')
+						.setButtonText('Connect to Nextcloud')
 						.setCta()
 						.onClick(() => void this.startCospendLogin(project)),
 				);
 			return;
 		}
 
-		new Setting(box).setDesc(`Verbunden als ${project.cospendLoginName}`).addButton((btn) =>
+		new Setting(box).setDesc(`Connected as ${project.cospendLoginName}`).addButton((btn) =>
 			btn
-				.setButtonText('Verbindung trennen')
+				.setButtonText('Disconnect')
 				.setWarning()
 				.onClick(async () => {
 					project.cospendLoginName = undefined;
@@ -385,28 +347,27 @@ export class IhmTrackerSettingTab extends PluginSettingTab {
 		);
 
 		const pickerContainer = box.createDiv();
-		pickerContainer.createEl('p', { text: 'Lade Cospend-Projekte …' });
+		pickerContainer.createEl('p', { text: 'Loading Cospend projects…' });
 		void this.renderCospendProjectPicker(pickerContainer, project);
 	}
 
 	private async startCospendLogin(project: IhmProjectConfig): Promise<void> {
 		if (!project.serverUrl.trim()) {
-			new Notice('Erst Nextcloud-Server-URL eintragen');
+			new Notice('Enter the Nextcloud server URL first');
 			return;
 		}
 		let init: LoginFlowInit;
 		try {
 			init = await startLoginFlow(project.serverUrl.trim());
 		} catch (e) {
-			new Notice(`Login-Flow-Start fehlgeschlagen — ${e instanceof Error ? e.message : String(e)}`);
+			new Notice(`Login flow failed to start — ${e instanceof Error ? e.message : String(e)}`);
 			return;
 		}
 		window.open(init.login);
 		let cancelled = false;
-		// timeout:0 = bleibt stehen, bis wir sie selbst schließen (Notice-API) —
-		// Klick zum Abbrechen, da der Login-Flow bis zu 20 Minuten gültig ist
-		// und wir keine Vollbild-Modal-Sperre für die Wartezeit wollen.
-		const notice = new Notice('Warte auf Login im Browser … (zum Abbrechen klicken)', 0);
+		// Persistent notice (timeout 0) as a cancel button — the flow is valid
+		// for up to 20 minutes.
+		const notice = new Notice('Waiting for login in the browser… (click to cancel)', 0);
 		notice.noticeEl.addEventListener('click', () => {
 			cancelled = true;
 			notice.hide();
@@ -427,14 +388,14 @@ export class IhmTrackerSettingTab extends PluginSettingTab {
 				project.serverUrl = result.server;
 				await this.plugin.saveSettings();
 				notice.hide();
-				new Notice('✅ Mit Nextcloud verbunden');
+				new Notice('✅ Connected to Nextcloud');
 				this.display();
 				return;
 			}
 		}
 		if (!cancelled) {
 			notice.hide();
-			new Notice('Login-Flow abgelaufen — bitte erneut versuchen');
+			new Notice('Login flow expired — please try again');
 		}
 	}
 
@@ -444,12 +405,12 @@ export class IhmTrackerSettingTab extends PluginSettingTab {
 		try {
 			projects = await fetchCospendProjects(project.serverUrl, project.cospendLoginName!, project.cospendAppPassword!);
 		} catch (e) {
-			container.createEl('p', { text: `Projekte konnten nicht geladen werden — ${e instanceof Error ? e.message : String(e)}` });
+			container.createEl('p', { text: `Projects could not be loaded — ${e instanceof Error ? e.message : String(e)}` });
 			return;
 		}
 
-		new Setting(container).setName('Cospend-Projekt').addDropdown((dd) => {
-			dd.addOption('', 'Bitte wählen …');
+		new Setting(container).setName('Cospend project').addDropdown((dd) => {
+			dd.addOption('', 'Choose…');
 			for (const p of projects) dd.addOption(p.id, p.name);
 			dd.setValue(project.projectId);
 			dd.onChange(async (value) => {
@@ -464,12 +425,12 @@ export class IhmTrackerSettingTab extends PluginSettingTab {
 		let newName = '';
 		let newId = '';
 		new Setting(container)
-			.setName('Neues Cospend-Projekt anlegen')
+			.setName('Create new Cospend project')
 			.addText((t) => t.setPlaceholder('Name').onChange((v) => (newName = v)))
-			.addText((t) => t.setPlaceholder('id, z.B. urlaub2026').onChange((v) => (newId = v)))
+			.addText((t) => t.setPlaceholder('id, e.g. holiday2026').onChange((v) => (newId = v)))
 			.addButton((btn) =>
 				btn
-					.setButtonText('Anlegen')
+					.setButtonText('Create')
 					.setCta()
 					.onClick(async () => {
 						if (!newName.trim() || !newId.trim()) return;
@@ -478,11 +439,11 @@ export class IhmTrackerSettingTab extends PluginSettingTab {
 							project.projectId = newId.trim();
 							project.nativeCategorySupport = true;
 							await this.plugin.saveSettings();
-							new Notice('Cospend-Projekt angelegt');
+							new Notice('Cospend project created');
 							this.notifyProjectChanged(project.id);
 							this.display();
 						} catch (e) {
-							new Notice(`Anlegen fehlgeschlagen — ${e instanceof Error ? e.message : String(e)}`);
+							new Notice(`Create failed — ${e instanceof Error ? e.message : String(e)}`);
 						}
 					}),
 			);
@@ -496,40 +457,39 @@ export class IhmTrackerSettingTab extends PluginSettingTab {
 			client = createExpenseClient(project, this.app, this.plugin.settings.categoryStoreFolder);
 			members = await client.fetchMembers();
 		} catch (e) {
-			container.createEl('p', { text: `Mitglieder konnten nicht geladen werden — ${e instanceof Error ? e.message : String(e)}` });
+			container.createEl('p', { text: `Members could not be loaded — ${e instanceof Error ? e.message : String(e)}` });
 			return;
 		}
 
 		for (const m of members) {
 			let nameValue = m.name;
 			const row = new Setting(container).addText((t) => t.setValue(m.name).onChange((v) => (nameValue = v)));
+			if (!m.activated) row.setDesc('Inactive — still referenced by bills. Add the same name again to reactivate.');
 			row.addButton((btn) =>
 				btn
 					.setIcon('check')
-					.setTooltip('Umbenennen')
+					.setTooltip('Rename')
 					.onClick(async () => {
 						const trimmed = nameValue.trim();
 						if (!trimmed || trimmed === m.name) return;
 						try {
 							await client.updateMember(m.ihmId, trimmed);
-							new Notice('Mitglied umbenannt');
+							new Notice('Member renamed');
 							await this.renderMembers(container, project);
 							this.notifyProjectChanged(project.id);
 						} catch (e) {
-							new Notice(`Umbenennen fehlgeschlagen — ${e instanceof Error ? e.message : String(e)}`);
+							new Notice(`Rename failed — ${e instanceof Error ? e.message : String(e)}`);
 						}
 					}),
 			);
-			// Zweistufig statt Browser-`confirm()` (blockiert die Extension) —
-			// erster Klick fragt nach, zweiter löscht. Entfernen kann
-			// bestehende Belege verwaisen lassen (Payer/Ower zeigt dann ins
-			// Leere), daher bewusst nicht ein Klick.
+			if (!m.activated) continue;
+			// Two-step instead of confirm() (blocks the webview).
 			let confirming = false;
 			const deleteBtn = row.controlEl.createEl('button', { text: '🗑️', cls: 'mod-warning' });
 			deleteBtn.onclick = async () => {
 				if (!confirming) {
 					confirming = true;
-					deleteBtn.setText('Wirklich?');
+					deleteBtn.setText('Really?');
 					window.setTimeout(() => {
 						if (confirming) {
 							confirming = false;
@@ -540,60 +500,49 @@ export class IhmTrackerSettingTab extends PluginSettingTab {
 				}
 				try {
 					await client.deleteMember(m.ihmId);
-					new Notice('Mitglied entfernt');
+					const after = await client.fetchMembers();
+					const still = after.find((x) => x.ihmId === m.ihmId);
+					new Notice(still && !still.activated ? 'Member deactivated — it is still referenced by bills' : 'Member removed');
 					await this.renderMembers(container, project);
 					this.notifyProjectChanged(project.id);
 				} catch (e) {
-					new Notice(`Entfernen fehlgeschlagen — ${e instanceof Error ? e.message : String(e)}`);
+					new Notice(`Remove failed — ${e instanceof Error ? e.message : String(e)}`);
 				}
 			};
 		}
 
 		let newName = '';
 		new Setting(container)
-			.setName('Neues Mitglied')
+			.setName('New member')
 			.addText((t) => t.setPlaceholder('Name').onChange((v) => (newName = v)))
 			.addButton((btn) =>
 				btn
-					.setButtonText('Hinzufügen')
+					.setButtonText('Add')
 					.setCta()
 					.onClick(async () => {
 						const trimmed = newName.trim();
 						if (!trimmed) return;
 						try {
 							await client.createMember(trimmed);
-							new Notice('Mitglied hinzugefügt');
+							new Notice('Member added');
 							await this.renderMembers(container, project);
 							this.notifyProjectChanged(project.id);
 						} catch (e) {
-							new Notice(`Hinzufügen fehlgeschlagen — ${e instanceof Error ? e.message : String(e)}`);
+							new Notice(`Add failed — ${e instanceof Error ? e.message : String(e)}`);
 						}
 					}),
 			);
 	}
 
-	/** Kategorien liegen als Teil von `ProjectCategoryData` in der Vault-Datei
-	 * (`CategoryStore`, nicht `data.json`) — hier nur Label/Emoji/Anlegen/
-	 * Löschen, keine Keyword-Pflege (die entsteht organisch über
-	 * `persistCategoryChoice()`/Trainingsdaten sobald die Kategorie einmal
-	 * benutzt wurde). Freies Emoji-Textfeld statt eigenem Picker (Nutzerwunsch
-	 * 2026-09-09: "eigens wählbares Icon") — gleiches Muster wie das
-	 * bestehende Projekt-Emoji-Feld oben, kein zusätzliches UI/Dependency
-	 * nötig, funktioniert identisch auf Desktop/iOS/Android. */
+	/** Label/emoji/add/delete only; keywords grow through training data. The
+	 * server-mapping dropdown exists only for the IHM fork (fixed list); for
+	 * Cospend the native id is created automatically on first push. */
 	private async renderCategories(container: HTMLElement, project: IhmProjectConfig): Promise<void> {
 		container.empty();
-		container.createEl('p', { text: 'Lade Kategorien …' });
+		container.createEl('p', { text: 'Loading categories…' });
 		const data = await this.plugin.categoryStore.load(project.id, project.backendType === 'ihatemoney');
 		container.empty();
-
-		// Manuelle Cospend-Zuordnung nur beim IHM-Server-Fork sinnvoll: der
-		// kennt ausschließlich die 10 festen `COSPEND_GLOBAL_CATEGORIES` (kein
-		// eigenes Kategorie-CRUD). Bei echtem Cospend entsteht die native id
-		// automatisch beim ersten Push (view/ihm-view.ts
-		// `resolveNativeCategoryId()`/`CospendClient.pushCategory()`), eine
-		// manuelle Auswahl aus der festen 10er-Liste wäre dort falsch (echte
-		// Cospend-Projekte haben beliebig viele freie Kategorien).
-		const showCospendPicker = project.backendType === 'ihatemoney';
+		const showServerPicker = project.backendType === 'ihatemoney';
 
 		for (const cat of data.categories) {
 			let emojiValue = cat.emoji;
@@ -605,9 +554,9 @@ export class IhmTrackerSettingTab extends PluginSettingTab {
 					t.inputEl.title = EMOJI_PICKER_HINT;
 				})
 				.addText((t) => t.setValue(cat.label).onChange((v) => (labelValue = v)));
-			if (showCospendPicker) {
+			if (showServerPicker) {
 				row.addDropdown((dd) => {
-					dd.addOption('', 'Keine Cospend-Entsprechung');
+					dd.addOption('', 'No server mapping');
 					for (const c of COSPEND_GLOBAL_CATEGORIES) dd.addOption(String(c.id), `${c.emoji} ${c.label}`);
 					dd.setValue(cat.nativeCategoryId != null ? String(cat.nativeCategoryId) : '');
 					dd.onChange(async (value) => {
@@ -620,24 +569,24 @@ export class IhmTrackerSettingTab extends PluginSettingTab {
 			row.addButton((btn) =>
 				btn
 					.setIcon('check')
-					.setTooltip('Speichern')
+					.setTooltip('Save')
 					.onClick(async () => {
-						const emoji = emojiValue.trim();
 						const label = labelValue.trim();
 						if (!label) return;
-						cat.emoji = emoji || '📦';
+						cat.emoji = emojiValue.trim() || '📦';
 						cat.label = label;
 						await this.saveCategories(project, data);
-						new Notice('Kategorie gespeichert');
+						new Notice('Category saved');
 						this.notifyProjectChanged(project.id);
 					}),
 			);
+			if (cat.id === OTHER_CATEGORY_ID) continue; // fallback category, not deletable
 			let confirming = false;
 			const deleteBtn = row.controlEl.createEl('button', { text: '🗑️', cls: 'mod-warning' });
 			deleteBtn.onclick = async () => {
 				if (!confirming) {
 					confirming = true;
-					deleteBtn.setText('Wirklich?');
+					deleteBtn.setText('Really?');
 					window.setTimeout(() => {
 						if (confirming) {
 							confirming = false;
@@ -646,9 +595,11 @@ export class IhmTrackerSettingTab extends PluginSettingTab {
 					}, 3000);
 					return;
 				}
+				// Tombstone, otherwise the merge resurrects it from disk.
+				data.deletedCategoryIds = { ...(data.deletedCategoryIds ?? {}), [cat.id]: new Date().toISOString() };
 				data.categories = data.categories.filter((c) => c.id !== cat.id);
 				await this.saveCategories(project, data);
-				new Notice('Kategorie entfernt');
+				new Notice('Category removed');
 				await this.renderCategories(container, project);
 				this.notifyProjectChanged(project.id);
 			};
@@ -657,7 +608,7 @@ export class IhmTrackerSettingTab extends PluginSettingTab {
 		let newEmoji = '📦';
 		let newLabel = '';
 		new Setting(container)
-			.setName('Neue Kategorie')
+			.setName('New category')
 			.addText((t) => {
 				t.setPlaceholder('Icon').setValue(newEmoji).onChange((v) => (newEmoji = v));
 				t.inputEl.addClass('ihm-category-emoji-input');
@@ -666,33 +617,22 @@ export class IhmTrackerSettingTab extends PluginSettingTab {
 			.addText((t) => t.setPlaceholder('Name').onChange((v) => (newLabel = v)))
 			.addButton((btn) =>
 				btn
-					.setButtonText('Hinzufügen')
+					.setButtonText('Add')
 					.setCta()
 					.onClick(async () => {
 						const label = newLabel.trim();
 						if (!label) return;
-						data.categories.push({
-							id: newCategoryId(label),
-							label,
-							emoji: newEmoji.trim() || '📦',
-							keywords: [],
-						});
+						data.categories.push({ id: newCategoryId(label), label, emoji: newEmoji.trim() || '📦', keywords: [] });
 						await this.saveCategories(project, data);
-						new Notice('Kategorie hinzugefügt');
+						new Notice('Category added');
 						await this.renderCategories(container, project);
 						this.notifyProjectChanged(project.id);
 					}),
 			);
 	}
 
-	/** Immer `mergeAndSave()` statt direktem Schreiben (siehe Klassen-Kommentar
-	 * in `sync/category-store.ts`) — sonst könnten zeitgleich vom Nutzer im
-	 * offenen View gelernte Trainingsdaten hier überschrieben werden. */
 	private async saveCategories(project: IhmProjectConfig, data: ProjectCategoryData): Promise<void> {
 		const result = await this.plugin.categoryStore.mergeAndSave(project.id, data, project.backendType === 'ihatemoney');
-		if (result.diverged) {
-			new Notice('Kategorie-Daten wurden mit einer zwischenzeitlichen Änderung von einem anderen Gerät zusammengeführt.');
-		}
+		if (result.diverged) new Notice('Category data was merged with changes from another device.');
 	}
 }
-

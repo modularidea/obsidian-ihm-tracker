@@ -5,17 +5,13 @@ import { CospendClient } from './cospend-client';
 import { LocalClient } from './local-client';
 import { ExpenseClient } from './expense-client';
 
-/** Einzige Stelle, die je nach `IhmProjectConfig.backendType` die richtige
- * `ExpenseClient`-Implementierung baut — Aufrufer (view/ihm-view.ts,
- * settings.ts) rufen NUR NOCH `createExpenseClient()`, nie mehr direkt
- * `new IhateMoneyClient(...)`. `categoryStoreFolder` wird nur für
- * `backendType === 'local'` gebraucht (dort landet auch die Bill-/
- * Mitglieder-Datei, gleicher Ordner wie die Kategorie-Store-Dateien). */
+/** The only place that picks a concrete client. `categoryStoreFolder` is
+ * where local projects keep their bill/member file. */
 export function createExpenseClient(project: IhmProjectConfig, app: App, categoryStoreFolder: string): ExpenseClient {
 	switch (project.backendType) {
 		case 'cospend':
 			if (!project.cospendLoginName || !project.cospendAppPassword) {
-				throw new Error('Cospend-Projekt nicht verbunden — in den Einstellungen erneut mit Nextcloud verbinden.');
+				throw new Error('Cospend project is not connected — reconnect to Nextcloud in the settings.');
 			}
 			return new CospendClient(project.serverUrl, project.projectId, project.cospendLoginName, project.cospendAppPassword);
 		case 'local':

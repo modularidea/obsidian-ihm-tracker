@@ -20,7 +20,9 @@ Obsidian (Obsidian Sync, iCloud, Syncthing, Git, ...). No account, no extra serv
   self-hosted [Nextcloud Cospend](https://apps.nextcloud.com/apps/cospend) project, or a fully
   local vault-only project with no server at all)
 - **Auto-categorization** — classifies bills from their title, learns from your corrections,
-  fully custom categories (label + emoji) per project
+  fully custom categories (label + emoji) per project. The built-in keyword list is tuned for
+  German-speaking households (shop names) plus generic English terms; training from your own
+  corrections works for any language
 - **Cross-device category sync** — the category mapping lives in your vault, not in
   `.obsidian/`'s plugin storage, so it rides along with your normal Obsidian sync
 - **Statistics** — overview (totals/trend/monthly), by category, by person (paid vs. share vs.
@@ -32,10 +34,11 @@ Obsidian (Obsidian Sync, iCloud, Syncthing, Git, ...). No account, no extra serv
   straight into a project from an iOS Shortcut / Android shortcut icon
 - Works on desktop **and mobile** (`isDesktopOnly: false`) — no Node-only APIs, all network
   access goes through Obsidian's own `requestUrl()`
+- UI in English; numbers, currency and dates follow your system locale
 
 ## Installing
 
-Install manually or via Obsdidian Community Plugins
+Install via Obsidian Community Plugins, or manually:
 
 1. Download `main.js`, `manifest.json` and `styles.css` from the
    [latest release](../../releases/latest)

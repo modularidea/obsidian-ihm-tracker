@@ -1,15 +1,11 @@
 import { requestUrl } from 'obsidian';
 
-// Nextcloud Login Flow v2 (docs.nextcloud.com/server/stable/developer_manual/
-// client_apis/LoginFlow/) — verifiziert 2026-09-10 gegen einen echten
-// lokalen Nextcloud-Server (siehe docker-compose.yml). Nur für den
-// EINMALIGEN Verbindungsaufbau in den Settings gedacht (settings.ts) — der
-// laufende Betrieb nutzt danach nur noch `CospendClient` mit den hier
-// gewonnenen `loginName`/`appPassword`. Bewusst NICHT Teil von
-// `ExpenseClient` (kein Projekt-Bezug, läuft VOR der Projekt-Auswahl).
+// Nextcloud Login Flow v2 (docs.nextcloud.com → client APIs → LoginFlow).
+// Used once from the settings to obtain an app password; the running client
+// (CospendClient) only uses the resulting loginName/appPassword.
 
 export interface LoginFlowInit {
-	login: string; // im System-Browser zu öffnende URL, NICHT im Webview (Nextcloud-Vorgabe)
+	login: string; // must be opened in the system browser, not a webview
 	poll: { token: string; endpoint: string };
 }
 
@@ -24,8 +20,6 @@ export interface CospendProjectSummary {
 	name: string;
 }
 
-// Wire-Format-Typ für `res.json` (Obsidian typisiert `RequestUrlResponse.json`
-// als `any`).
 interface CospendProjectJson {
 	id: string;
 	name: string;
@@ -42,15 +36,12 @@ export async function startLoginFlow(serverUrl: string): Promise<LoginFlowInit> 
 		headers: { 'OCS-APIRequest': 'true' },
 		throw: false,
 	});
-	if (res.status !== 200) throw new Error(`Login-Flow konnte nicht gestartet werden (${res.status}) — Server-URL prüfen`);
+	if (res.status !== 200) throw new Error(`Login flow could not be started (${res.status}) — check the server URL`);
 	return res.json as LoginFlowInit;
 }
 
-/** Ein Poll-Versuch — `null` solange der Nutzer den Login im Browser noch
- * nicht abgeschlossen hat (Server antwortet mit 404, siehe Login-Flow-v2-
- * Doku). Aufrufer (settings.ts) ruft das in einer Schleife mit Intervall auf,
- * bis ein Ergebnis kommt oder der Nutzer abbricht — KEIN eingebautes Timeout
- * hier, das ist UI-Zustand, kein Protokoll-Detail. */
+/** One poll attempt; null (server answers 404) until the user finished the
+ * browser login. The caller loops with an interval and its own timeout. */
 export async function pollLoginFlow(poll: LoginFlowInit['poll']): Promise<LoginFlowResult | null> {
 	const res = await requestUrl({
 		url: poll.endpoint,
@@ -59,8 +50,7 @@ export async function pollLoginFlow(poll: LoginFlowInit['poll']): Promise<LoginF
 		body: `token=${encodeURIComponent(poll.token)}`,
 		throw: false,
 	});
-	if (res.status === 200) return res.json as LoginFlowResult;
-	return null;
+	return res.status === 200 ? (res.json as LoginFlowResult) : null;
 }
 
 function headers(loginName: string, appPassword: string): Record<string, string> {
@@ -71,25 +61,18 @@ function headers(loginName: string, appPassword: string): Record<string, string>
 	};
 }
 
-/** Listet die Cospend-Projekte des per Login Flow v2 verbundenen Nutzers —
- * ermöglicht einen Projekt-Picker statt manueller id-Eingabe (Nutzerwunsch
- * 2026-09-10, analog MoneyBusters "Projekte automatisch hinzufügen"). */
 export async function fetchCospendProjects(serverUrl: string, loginName: string, appPassword: string): Promise<CospendProjectSummary[]> {
 	const res = await requestUrl({
 		url: `${base(serverUrl)}/index.php/apps/cospend/api-priv/projects`,
 		headers: headers(loginName, appPassword),
 		throw: false,
 	});
-	if (res.status !== 200) throw new Error(`Projekte konnten nicht geladen werden (${res.status})`);
+	if (res.status !== 200) throw new Error(`Projects could not be loaded (${res.status})`);
 	return (res.json as CospendProjectJson[]).map((p) => ({ id: p.id, name: p.name }));
 }
 
-/** Legt ein neues Cospend-Projekt für den verbundenen Nutzer an (Nutzerwunsch
- * 2026-09-10: "auch neues Projekt anlegen"). `id` ist der spätere
- * `IhmProjectConfig.projectId` — Cospend erlaubt hier freie Wahl, nicht
- * serverseitig generiert (siehe `apiPrivCreateProject`-Signatur im
- * Cospend-Quellcode: `name`+`id`, kein Passwort — das Projekt gehört direkt
- * dem eingeloggten Nutzer, kein Public-Share nötig). */
+/** `id` is user-chosen (Cospend allows free ids); the project belongs to the
+ * logged-in user, no public share needed. */
 export async function createCospendProject(serverUrl: string, loginName: string, appPassword: string, name: string, id: string): Promise<void> {
 	const res = await requestUrl({
 		url: `${base(serverUrl)}/index.php/apps/cospend/api-priv/projects`,
@@ -100,6 +83,6 @@ export async function createCospendProject(serverUrl: string, loginName: string,
 	});
 	if (res.status !== 200) {
 		const message = (res.json as string[] | undefined)?.[0] ?? res.text;
-		throw new Error(`Projekt konnte nicht angelegt werden — ${message}`);
+		throw new Error(`Project could not be created — ${message}`);
 	}
 }

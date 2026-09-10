@@ -1,16 +1,13 @@
-# Baut IHateMoney aus dem Upstream-Quellcode (gepinnt auf einen Commit) +
-# ihm-categoryid.patch (siehe README.md) — statt den Fork als Vollkopie im
-# Repo zu vendoren. Rebase auf ein neueres Upstream bedeutet: IHATEMONEY_REF
-# hochsetzen, `git apply` neu prüfen, Patch bei Bedarf anpassen.
+# Builds IHateMoney from the pinned upstream commit + ihm-categoryid.patch
+# (see README.md) instead of vendoring a full fork copy.
 #
-# Stage 1: Upstream-Quelle holen + patchen.
+# Stage 1: fetch upstream source and apply the patch.
 FROM python:3.11-alpine AS patched-source
 
 RUN apk add --no-cache git
 
-# Pin: e66a7672e8e5c41549bf53c4a824c72c43ab9079 = "Back to development: 7.2.2"
-# (main-Branch, Stand 2026-09-08) — der Commit, gegen den ihm-categoryid.patch
-# erzeugt wurde. Beim Rebase hier den neuen Ziel-Commit eintragen.
+# "Back to development: 7.2.2" — the commit the patch was created against.
+# Bump this when rebasing.
 ARG IHATEMONEY_REF=e66a7672e8e5c41549bf53c4a824c72c43ab9079
 
 RUN git clone https://github.com/spiral-project/ihatemoney.git /src \
@@ -20,8 +17,8 @@ RUN git clone https://github.com/spiral-project/ihatemoney.git /src \
 COPY ihm-categoryid.patch /tmp/ihm-categoryid.patch
 RUN cd /src && git apply --verbose /tmp/ihm-categoryid.patch
 
-# Stage 2: identischer Build wie das offizielle ihatemoney/Dockerfile, nur
-# ADD durch COPY --from=patched-source ersetzt.
+# Stage 2: identical to the official ihatemoney/Dockerfile, with ADD replaced
+# by COPY --from=patched-source.
 FROM python:3.11-alpine
 
 ENV PORT="8000" \
