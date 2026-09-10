@@ -199,20 +199,13 @@ export class IhmView extends ItemView {
 	 * auf einer fixen Pixelhöhe hängen bleiben. */
 	private animateFilterPanelOpen(panel: HTMLElement): void {
 		const target = panel.scrollHeight;
-		panel.style.overflow = 'hidden';
-		panel.style.height = '0px';
-		panel.style.opacity = '0';
+		panel.setCssStyles({ overflow: 'hidden', height: '0px', opacity: '0' });
 		void panel.offsetHeight; // erzwingt Reflow, siehe Kommentar oben
-		panel.style.transition = 'height 160ms ease, opacity 160ms ease';
-		panel.style.height = `${target}px`;
-		panel.style.opacity = '1';
+		panel.setCssStyles({ transition: 'height 160ms ease, opacity 160ms ease', height: `${target}px`, opacity: '1' });
 		panel.addEventListener(
 			'transitionend',
 			() => {
-				panel.style.transition = '';
-				panel.style.height = '';
-				panel.style.overflow = '';
-				panel.style.opacity = '';
+				panel.setCssStyles({ transition: '', height: '', overflow: '', opacity: '' });
 			},
 			{ once: true },
 		);
@@ -225,12 +218,9 @@ export class IhmView extends ItemView {
 	 * Element statt frisch eingefügtem Panel, siehe Kommentar oben). */
 	private collapseFilterPanel(panel: HTMLElement, onDone: () => void): void {
 		const from = panel.scrollHeight;
-		panel.style.overflow = 'hidden';
-		panel.style.height = `${from}px`;
+		panel.setCssStyles({ overflow: 'hidden', height: `${from}px` });
 		void panel.offsetHeight;
-		panel.style.transition = 'height 160ms ease, opacity 160ms ease';
-		panel.style.height = '0px';
-		panel.style.opacity = '0';
+		panel.setCssStyles({ transition: 'height 160ms ease, opacity 160ms ease', height: '0px', opacity: '0' });
 		panel.addEventListener('transitionend', onDone, { once: true });
 	}
 
@@ -1004,10 +994,6 @@ export class IhmView extends ItemView {
 		if (this.bulkMode) {
 			const checkbox = row.createEl('input', { cls: 'ihm-bill-checkbox', attr: { type: 'checkbox', tabindex: '-1' } }) as HTMLInputElement;
 			checkbox.checked = this.selectedBillIds.has(bill.ihmId);
-			// Rein visuell — das Toggeln läuft über `bindCardPress` auf der
-			// ganzen Zeile, sonst würde ein Klick genau auf die Checkbox
-			// doppelt (eigenes onchange + Zeilen-Pointerup) toggeln.
-			checkbox.style.pointerEvents = 'none';
 		} else {
 			row.createDiv({ cls: 'ihm-bill-icon', text: catDef.emoji });
 		}

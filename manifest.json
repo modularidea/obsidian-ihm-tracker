@@ -1,8 +1,8 @@
 {
 	"id": "ihm-tracker",
 	"name": "IHM Tracker",
-	"version": "0.8.0",
-	"minAppVersion": "1.0.0",
+	"version": "0.8.1",
+	"minAppVersion": "1.7.2",
 	"description": "IHateMoney-Client: Belege anzeigen/bearbeiten, gerätesynchronisierte Auto-Kategorisierung, Statistiken, PDF/Excel-Export.",
 	"author": "modularidea",
 	"isDesktopOnly": false

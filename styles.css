@@ -297,6 +297,9 @@
 	flex: 0 0 auto;
 	width: 20px;
 	height: 20px;
+	/* rein visuell — Toggeln läuft über bindCardPress auf der ganzen Zeile,
+	   sonst würde ein Klick genau auf die Checkbox doppelt toggeln */
+	pointer-events: none;
 }
 
 /* Floating-Action-Button statt "+ Neuer Beleg"-Button in der Toolbar

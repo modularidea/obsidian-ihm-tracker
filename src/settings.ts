@@ -90,8 +90,6 @@ export class IhmTrackerSettingTab extends PluginSettingTab {
 		const { containerEl } = this;
 		containerEl.empty();
 
-		containerEl.createEl('h2', { text: 'IHM Tracker' });
-
 		new Setting(containerEl)
 			.setName('Kategorie-Ordner im Vault')
 			.setDesc(
@@ -109,7 +107,7 @@ export class IhmTrackerSettingTab extends PluginSettingTab {
 					}),
 			);
 
-		containerEl.createEl('h3', { text: 'Synchronisierung' });
+		new Setting(containerEl).setName('Synchronisierung').setHeading();
 
 		new Setting(containerEl)
 			.setName('Automatisch synchronisieren')
@@ -144,7 +142,7 @@ export class IhmTrackerSettingTab extends PluginSettingTab {
 				}),
 			);
 
-		containerEl.createEl('h3', { text: 'Projekte' });
+		new Setting(containerEl).setName('Projekte').setHeading();
 
 		for (const project of this.plugin.settings.projects) {
 			this.renderProject(containerEl, project);
@@ -244,7 +242,7 @@ export class IhmTrackerSettingTab extends PluginSettingTab {
 		const shortcutIdentifier = project.projectId.trim() || project.name.trim();
 		if (shortcutIdentifier) {
 			const shortcutBox = box.createDiv({ cls: 'ihm-shortcut-hint' });
-			shortcutBox.createEl('h5', { text: 'Homescreen-Shortcut' });
+			new Setting(shortcutBox).setName('Homescreen-Shortcut').setHeading();
 			shortcutBox.createEl('p', {
 				cls: 'ihm-muted',
 				text: 'Springt direkt zu diesem Projekt — z.B. als iOS-Kurzbefehl ("URL öffnen" + "Zum Home-Bildschirm mit eigenem Icon") oder über eine Android-Shortcut-App:',
