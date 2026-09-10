@@ -1,4 +1,4 @@
-import { Notice } from 'obsidian';
+import { Notice, setIcon } from 'obsidian';
 import { BillCategoryDef, IhmBill, TrainingDoc } from '../types';
 import { IhmMemberRaw } from '../ihm-api/client';
 import { classify } from '../categorize/classifier';
@@ -36,6 +36,12 @@ export interface BillFormOptions {
 	 * selbst statt als eigene Aktion in der Belegliste (Nutzerfrage
 	 * 2026-09-09: Tap auf eine Karte öffnet direkt das Formular). */
 	onDelete?: () => void;
+	/** Nur im schmalen Layout gesetzt (Formular ersetzt die komplette
+	 * Tab-Fläche, kein Tablet-Split) — Zurück-Pfeil-Button. Muss INNERHALB
+	 * von `.ihm-form-root` liegen (siehe dort), nicht als Geschwister-Element
+	 * vom Aufrufer davor eingefügt werden, sonst würde `height:100%` auf
+	 * `.ihm-form-root` den verfügbaren Platz sprengen. */
+	onBack?: () => void;
 }
 
 /** Erlaubt Komma ODER Punkt als Dezimaltrennzeichen (de-DE-Tastatur schreibt
@@ -82,13 +88,46 @@ export function renderBillForm(container: HTMLElement, opts: BillFormOptions): v
 	// die ID gebunden, nicht an diese Sortierung, siehe dort.
 	const sortedMembers = [...members].sort((a, b) => a.name.localeCompare(b.name));
 
-	container.createEl('h3', { text: existing ? 'Beleg bearbeiten' : 'Neuer Beleg' });
+	// Formular-Root als Flex-Spalte: `scrollArea` (Titel bis Beteiligt-Chips)
+	// nimmt den ganzen verfügbaren Platz und scrollt bei Bedarf, die Buttons
+	// bleiben als eigenes `flex:0 0 auto`-Fußelement IMMER im sichtbaren
+	// Bereich sichtbar — kein `position:sticky`/negative Margins mehr nötig
+	// (Nutzer-Feedback 2026-09-10, drei Runden: `sticky`+Fade-Gradient
+	// erzeugte je nach Container-Padding/Content-Länge eine Lücke am unteren
+	// Rand, unbedeckte seitliche Kanten, oder ein Überdecken des letzten
+	// Chips am Scroll-Ende — Standard-Flex-"Header/Body/Footer" umgeht all
+	// das strukturell, analog zum FAB-Fix in `ihm-view.ts`). `container`
+	// selbst (`.ihm-tab-content`/`.ihm-bills-detail-pane`) hat zwar eigenes
+	// `overflow-y:auto`, das greift hier nie, weil `formRoot` mit
+	// `height:100%` den kompletten verfügbaren Platz ausfüllt.
+	const formRoot = container.createDiv({ cls: 'ihm-form-root' });
+
+	if (opts.onBack) {
+		const backRow = formRoot.createDiv({ cls: 'ihm-form-back-row' });
+		const backBtn = backRow.createEl('button', { cls: 'ihm-icon-btn', attr: { 'aria-label': 'Zurück zur Liste' } });
+		setIcon(backBtn, 'arrow-left');
+		backBtn.onclick = () => opts.onBack!();
+	}
+
+	const scrollArea = formRoot.createDiv({ cls: 'ihm-form-scroll-area' });
+	// Explizit erzwungen statt dem Browser-Default überlassen — Titel/Betrag
+	// waren beim Öffnen eines Formulars teils schon weggescrollt (Nutzer-
+	// Feedback 2026-09-10), obwohl `scrollArea` gerade erst neu erstellt
+	// wurde. `requestAnimationFrame` sichert zusätzlich gegen Fälle ab, in
+	// denen der Browser den Scroll erst NACH diesem Punkt verändert (z.B.
+	// automatisches Scrollen zu einem fokussierten Element nach dem Mount).
+	scrollArea.scrollTop = 0;
+	requestAnimationFrame(() => {
+		scrollArea.scrollTop = 0;
+	});
+
+	scrollArea.createEl('h3', { text: existing ? 'Beleg bearbeiten' : 'Neuer Beleg' });
 
 	// ── Titel ────────────────────────────────────────────────────────────
 	// Kein Label darüber (Nutzer-Feedback 2026-09-09: "Feldname eher als
 	// Tooltip") — Platzhalter+`title`-Attribut übernehmen das, Titel ist
 	// dadurch automatisch das optisch dominante erste Feld.
-	const titleField = container.createDiv({ cls: 'ihm-form-field' });
+	const titleField = scrollArea.createDiv({ cls: 'ihm-form-field' });
 	const titleInput = titleField.createEl('input', {
 		cls: 'ihm-form-title-input',
 		attr: { type: 'text', placeholder: 'Titel', title: 'Titel' },
@@ -96,7 +135,7 @@ export function renderBillForm(container: HTMLElement, opts: BillFormOptions): v
 	titleInput.value = what;
 
 	// ── Betrag + Datum (nebeneinander) ──────────────────────────────────
-	const row = container.createDiv({ cls: 'ihm-form-row' });
+	const row = scrollArea.createDiv({ cls: 'ihm-form-row' });
 
 	const amountField = row.createDiv({ cls: 'ihm-form-field ihm-form-amount-field' });
 	// `type="text"` + `inputmode="decimal"` statt `type="number"` — zeigt auf
@@ -115,7 +154,7 @@ export function renderBillForm(container: HTMLElement, opts: BillFormOptions): v
 	dateInput.onchange = () => (date = dateInput.value);
 
 	// ── Bezahlt von (Chips) ──────────────────────────────────────────────
-	const payerField = container.createDiv({ cls: 'ihm-form-field' });
+	const payerField = scrollArea.createDiv({ cls: 'ihm-form-field' });
 	payerField.createDiv({ cls: 'ihm-form-label', text: 'Bezahlt von' });
 	const payerChipRow = payerField.createDiv({ cls: 'ihm-form-chip-row' });
 	const payerChips = new Map<number, HTMLElement>();
@@ -135,7 +174,7 @@ export function renderBillForm(container: HTMLElement, opts: BillFormOptions): v
 	for (const [id, el] of payerChips) el.classList.toggle('is-selected', id === payerIhmId);
 
 	// ── Kategorie ────────────────────────────────────────────────────────
-	const catField = container.createDiv({ cls: 'ihm-form-field' });
+	const catField = scrollArea.createDiv({ cls: 'ihm-form-field' });
 	catField.createDiv({ cls: 'ihm-form-label', text: 'Kategorie' });
 	const catSelect = catField.createEl('select', { cls: 'ihm-cat-select' });
 	if (categoryId === NO_CATEGORY) {
@@ -150,7 +189,7 @@ export function renderBillForm(container: HTMLElement, opts: BillFormOptions): v
 	// wenn der Aufrufer (ihm-view.ts) überhaupt Zahlungsmittel mitgibt.
 	let paymentModeId = existing?.paymentModeId;
 	if (opts.paymentModes && opts.paymentModes.length > 0) {
-		const pmField = container.createDiv({ cls: 'ihm-form-field' });
+		const pmField = scrollArea.createDiv({ cls: 'ihm-form-field' });
 		pmField.createDiv({ cls: 'ihm-form-label', text: 'Zahlungsmittel' });
 		const pmSelect = pmField.createEl('select');
 		pmSelect.createEl('option', { text: 'Keine Angabe', value: '' });
@@ -169,7 +208,7 @@ export function renderBillForm(container: HTMLElement, opts: BillFormOptions): v
 	};
 
 	// ── Beteiligt (Chips, mit Live-Anteilsberechnung) ───────────────────
-	const owersField = container.createDiv({ cls: 'ihm-form-field' });
+	const owersField = scrollArea.createDiv({ cls: 'ihm-form-field' });
 	owersField.createDiv({ cls: 'ihm-form-label', text: 'Beteiligt' });
 	const owersChipRow = owersField.createDiv({ cls: 'ihm-form-chip-row' });
 	const owerShareEls = new Map<number, HTMLElement>();
@@ -215,7 +254,9 @@ export function renderBillForm(container: HTMLElement, opts: BillFormOptions): v
 	});
 
 	// ── Buttons ──────────────────────────────────────────────────────────
-	const buttons = container.createDiv({ cls: 'ihm-modal-buttons' });
+	// Geschwister von `scrollArea`, nicht deren Kind — bleibt dadurch immer
+	// sichtbar, siehe Kommentar bei `formRoot` oben.
+	const buttons = formRoot.createDiv({ cls: 'ihm-modal-buttons' });
 	if (opts.onDelete) {
 		// Zweistufig statt Popup-Modal (Nutzer-Feedback 2026-09-09): erster
 		// Klick blendet "Wirklich löschen?" + Ja/Nein an derselben Stelle ein,

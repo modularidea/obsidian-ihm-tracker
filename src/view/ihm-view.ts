@@ -355,7 +355,13 @@ export class IhmView extends ItemView {
 		} else {
 			this.renderStatsBody(content);
 		}
-		content.scrollTop = this.tabScrollTop;
+		// `.ihm-form-root` (Beleg-Formular bei schmalem Layout) füllt
+		// `.ihm-tab-content` per `height:100%` exakt aus und scrollt selbst
+		// NICHT mehr (siehe `.ihm-form-scroll-area`) — ein geerbter
+		// `tabScrollTop` von einer vorherigen, höheren Ansicht (z.B. langer
+		// Auswertung-Tab) hätte hier sonst den oberen Formularbereich
+		// abgeschnitten (Nutzer-Feedback 2026-09-10: "Titel/Betrag fehlen").
+		if (!content.querySelector('.ihm-form-root')) content.scrollTop = this.tabScrollTop;
 
 		if (this.pendingSlide) {
 			const offset = this.pendingSlide === 'forward' ? 24 : -24;
@@ -1074,10 +1080,6 @@ export class IhmView extends ItemView {
 		};
 
 		if (showBack) {
-			const backRow = container.createDiv({ cls: 'ihm-form-back-row' });
-			const backBtn = backRow.createEl('button', { cls: 'ihm-icon-btn', attr: { 'aria-label': 'Zurück zur Liste' } });
-			setIcon(backBtn, 'arrow-left');
-			backBtn.onclick = () => goBack();
 			this.bindSwipeBack(container, goBack);
 		}
 
@@ -1093,6 +1095,7 @@ export class IhmView extends ItemView {
 			paymentModes: project.backendType === 'cospend' ? this.paymentModes : undefined,
 			defaultPayerIhmId: project.lastPayerIhmId,
 			existing,
+			onBack: showBack ? goBack : undefined,
 			onCancel: () => {
 				if (showBack) goBack();
 				else {

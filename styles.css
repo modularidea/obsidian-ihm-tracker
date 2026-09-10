@@ -37,6 +37,12 @@
 	flex: 1 1 auto;
 	min-height: 0;
 	overflow-y: auto;
+	/* Sicherheitsnetz gegen ungewollten horizontalen Scroll (Nutzer-Feedback
+	   2026-09-10, iOS: Beleg-Formular scrollte seitlich) — verschachtelte
+	   Elemente mit eigenem `overflow-x:auto` (z.B. die Pivot-Tabelle) bleiben
+	   davon unberührt, nur DIESER äußere Container selbst wird nie breiter
+	   als der sichtbare Bereich. */
+	overflow-x: hidden;
 	/* Abstand oben statt direkt an der Topbar-Kante (Nutzer-Feedback
 	   2026-09-09) — zusammen mit deren `box-shadow` oben der Ort, an dem
 	   Belege sichtbar "unter" die Leiste scrollen. */
@@ -331,13 +337,18 @@
 	line-height: 1;
 	padding: 0;
 	box-shadow: var(--shadow-l, 0 4px 12px rgba(0, 0, 0, 0.3));
-	/* 0.7 war zu deutlich (Phase 11), 0.3 dann zu schwach — ging in dunklen
-	   Karten optisch unter (Nutzer-Feedback 2026-09-10, iOS-Screenshot). */
-	opacity: 0.55;
+	/* Der eigentliche Grund für "immer noch zu durchsichtig" über drei
+	   Opacity-Anläufe (0.7/0.3/0.55/0.92) hinweg: der Button hatte GAR
+	   KEINEN eigenen `background` — nur Obsidians dezentes Standard-Button-
+	   Styling, das selbst kaum Kontrast zur Karte darunter hat. Jede Opacity
+	   eines schwachen Hintergrunds bleibt ein schwacher Hintergrund. Fix:
+	   derselbe Akzent-Hintergrund wie der "Speichern"-Button (`mod-cta`). */
+	background: var(--interactive-accent);
+	color: var(--text-on-accent);
 }
 
 .ihm-fab:hover {
-	opacity: 0.95;
+	background: var(--interactive-accent-hover);
 }
 
 /* Tablet/breiter Tab: Liste + Formular-Panel nebeneinander (Master-Detail,
@@ -373,6 +384,14 @@
 .ihm-bill-scroll-area {
 	height: 100%;
 	overflow-y: auto;
+	/* Explizit, nicht dem Browser-Default überlassen: laut CSS-Spec wird
+	   `overflow-x: visible` automatisch zu `auto` "computed", sobald
+	   `overflow-y` etwas anderes als `visible` ist — ohne das hier bekäme
+	   dieses Element sein EIGENES horizontales Scrollen, das `.ihm-tab-
+	   content`s `overflow-x:hidden` (Sicherheitsnetz) nicht mehr abfängt
+	   (Nutzer-Feedback 2026-09-10: seitliches Scrollen war nach dem
+	   `.ihm-form-scroll-area`-Umbau am selben Grund wieder da). */
+	overflow-x: hidden;
 	-webkit-overflow-scrolling: touch;
 }
 
@@ -396,6 +415,7 @@
 	min-width: 0;
 	height: 100%;
 	overflow-y: auto;
+	overflow-x: hidden;
 	-webkit-overflow-scrolling: touch;
 	background: var(--background-secondary);
 	border-left: 2px solid var(--background-modifier-border);
@@ -919,6 +939,36 @@
 
 /* ── Beleg-Formular (bill-form.ts, inline statt Modal) ─────────────────── */
 
+/* Flex-Spalte: `.ihm-form-scroll-area` nimmt den ganzen verfügbaren Platz
+   und scrollt bei Bedarf, `.ihm-modal-buttons` bleibt als eigenes
+   `flex:0 0 auto`-Fußelement immer sichtbar — siehe Kommentar in
+   `bill-form.ts` bei `formRoot` für die Historie (ersetzt einen
+   `position:sticky`-Ansatz, der über drei Feedback-Runden verschiedene
+   Rand-/Überdeckungs-Probleme hatte). */
+.ihm-form-root {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+}
+
+.ihm-form-scroll-area {
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow-y: auto;
+	/* Siehe Kommentar bei `.ihm-bill-scroll-area` — ohne explizites
+	   `overflow-x` wird es hier automatisch zu `auto` "computed" statt
+	   `visible` zu bleiben, sonst scrollt dieses Element selbst seitlich. */
+	overflow-x: hidden;
+	-webkit-overflow-scrolling: touch;
+	/* Beide möglichen Eltern (`.ihm-tab-content`/`.ihm-bills-detail-pane`)
+	   haben zwar schon eigenes `padding:12px`, das reichte bei sichtbaren
+	   (nicht Overlay-)Scrollbars trotzdem nicht (Nutzer-Feedback 2026-09-10:
+	   Scrollbar lag über dem Chip-Inhalt) — gleiches Muster wie
+	   `.ihm-bills-list-pane .ihm-bill-scroll-area`. */
+	padding-right: var(--size-4-2, 8px);
+	scrollbar-gutter: stable;
+}
+
 .ihm-form-field {
 	margin-bottom: var(--size-4-4, 16px);
 }
@@ -981,6 +1031,31 @@
 	box-sizing: border-box;
 }
 
+/* `min-width:0` (oben) behebt zwar das Overflow-Problem, aber bei nur ~170px
+   verfügbarer Breite (halbe Zeile auf einem iPhone) wechselt WebKit selbst
+   INNERHALB seiner erlaubten Breite auf ein anderes, kompakteres
+   `<input type="date">`-Rendering (nur noch Icon+knappes Format statt der
+   vollen Feldsegmente) — sichtbar anders als vorher (Nutzer-Feedback
+   2026-09-10, iOS: "Titel und Datum-Felder fallen jetzt raus"). Fix: auf
+   schmalen Screens bekommen Betrag und Datum wieder je ihre EIGENE volle
+   Zeile (wie vor der "nebeneinander"-Entscheidung von 2026-09-09) — genug
+   Breite für normales Rendering, und das Overflow-Problem verschwindet
+   gleich mit (kein Nebeneinander mehr, das schrumpfen müsste). */
+@media (max-width: 480px) {
+	.ihm-form-row {
+		flex-direction: column;
+	}
+
+	/* OHNE das hier erben die Felder weiterhin `flex: 1 1 0` von oben — im
+	   Column-Kontext verteilt das die HÖHE (nicht Breite) proportional statt
+	   jedem Feld seine natürliche Höhe zu geben (Nutzer-Feedback 2026-09-10:
+	   Datumsfeld hatte dadurch eine andere Größe als Titel/Betrag darüber). */
+	.ihm-form-amount-field,
+	.ihm-form-date-field {
+		flex: 0 0 auto;
+	}
+}
+
 /* Bezahlt-von/Beteiligt als antippbare Chips statt Dropdown/Checkboxen
    (Nutzer-Feedback 2026-09-09) — horizontal scrollbar statt umzubrechen,
    damit auch bei vielen Mitgliedern nichts abgeschnitten wird. */
@@ -994,6 +1069,15 @@
 	flex-direction: column;
 	align-items: stretch;
 	gap: var(--size-4-2, 8px);
+	/* Ausgewählte Chips wachsen per `transform: scale(1.03)` gleichmäßig in
+	   alle Richtungen (siehe `.ihm-form-chip.is-selected`) — bei `stretch`
+	   nehmen sie schon die volle Zeilenbreite ein, der Scale-Überstand ragt
+	   dadurch über den Rand hinaus. Seit `overflow-x:hidden` auf den
+	   umgebenden Scroll-Areas (Nutzer-Feedback 2026-09-10, Overflow-Fix)
+	   wird dieser Überstand jetzt sichtbar abgeschnitten statt einfach
+	   unsichtbar über den Rand zu ragen — eigenes horizontales Padding gibt
+	   dem Scale genug Reserve. */
+	padding: 0 var(--size-4-2, 8px);
 }
 
 .ihm-form-chip {
@@ -1034,24 +1118,22 @@
 	color: var(--interactive-accent);
 }
 
-/* Sticky am unteren Rand des scrollenden Formular-Containers (Nutzerwunsch
-   2026-09-10: bei vielen Mitgliedern/langen Chip-Listen musste man erst bis
-   ganz nach unten scrollen, um zu speichern). `position: sticky` statt
-   `fixed` — bleibt automatisch auf den jeweiligen Scroll-Container
-   beschränkt (`.ihm-tab-content` schmal, `.ihm-bills-detail-pane` breit),
-   kein Sonderfall pro Layout nötig. Eigener Hintergrund + Schatten nach
-   oben, sonst scrollt der Content sichtbar "durch" die Buttons. */
+/* Immer sichtbares Fuß-Element von `.ihm-form-root` (siehe dort) — KEIN
+   `position:sticky` mehr (siehe `docs/bugs.md`/Git-History für die drei
+   gescheiterten Sticky+Margin-Anläufe: Lücken am Rand, durchscheinender
+   Content am Scroll-Ende, je nach Container-Padding). Reiner Flex-Footer,
+   `border-top` als einfache, garantiert korrekte visuelle Abgrenzung zum
+   Scroll-Bereich statt eines Fade-Effekts. */
 .ihm-modal-buttons {
 	display: flex;
 	flex-wrap: wrap;
 	justify-content: flex-end;
+	align-items: center;
 	gap: var(--size-4-2, 8px);
+	flex: 0 0 auto;
+	padding-top: var(--size-4-3, 12px);
 	margin-top: var(--size-4-3, 12px);
-	position: sticky;
-	bottom: 0;
-	background: var(--background-primary);
-	padding: var(--size-4-2, 8px) 0;
-	box-shadow: 0 -8px 8px -8px rgba(0, 0, 0, 0.3);
+	border-top: 1px solid var(--background-modifier-border);
 }
 
 /* Löschen im Bearbeiten-Formular (bill-form.ts) sitzt links, Abbrechen/
