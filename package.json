@@ -1,6 +1,6 @@
 {
 	"name": "ihm-tracker",
-	"version": "0.8.1",
+	"version": "0.8.2",
 	"description": "IHateMoney client for Obsidian: Belege anzeigen/bearbeiten, Auto-Kategorisierung, Statistiken, PDF/Excel-Export.",
 	"main": "main.js",
 	"type": "module",
