@@ -32,6 +32,49 @@ import type { ExpenseClient, PaymentMode } from './expense-client';
 
 const REIMBURSEMENT_CATEGORY_ID = -11;
 
+// Wire-Format-Typen für `res.json` (Obsidian typisiert `RequestUrlResponse.json`
+// als `any` — diese Interfaces geben dem Response-Body einmal einen Typ, statt
+// bei jedem einzelnen Property-Zugriff unten `as X` zu casten.
+interface CospendProjectInfoJson {
+	currencyname?: string;
+	paymentmodes?: Record<string, { id: number; name: string; icon: string }>;
+	categories?: Record<string, { id: number; name: string; icon: string }>;
+}
+
+interface CospendMemberJson {
+	id: number;
+	name: string;
+	weight?: number;
+}
+
+interface CospendStatsJson {
+	stats?: { member: { id: number }; balance: number }[];
+}
+
+interface CospendBillOwerJson {
+	id: number;
+	weight?: number;
+}
+
+interface CospendBillJson {
+	id: number;
+	what: string;
+	payer_id: number;
+	owers?: (CospendBillOwerJson | number)[];
+	amount: number;
+	date: string;
+	categoryid?: number;
+	paymentmodeid?: number;
+}
+
+interface CospendBillsResponseJson {
+	bills?: CospendBillJson[];
+}
+
+interface CospendSettleResponseJson {
+	transactions?: { from: number; to: number; amount: number }[];
+}
+
 export class CospendClient implements ExpenseClient {
 	constructor(
 		private serverUrl: string,
@@ -78,7 +121,7 @@ export class CospendClient implements ExpenseClient {
 		try {
 			const res = await requestUrl({ url: this.base(), headers: this.headers(), throw: false });
 			if (res.status !== 200) return 'EUR';
-			const name = res.json?.currencyname as string | undefined;
+			const name = (res.json as CospendProjectInfoJson | undefined)?.currencyname;
 			return name && /^[A-Z]{3}$/.test(name) ? name : 'EUR';
 		} catch {
 			return 'EUR';
@@ -99,39 +142,39 @@ export class CospendClient implements ExpenseClient {
 		if (membersRes.status !== 200) throw new IhmApiError(membersRes.status, membersRes.text);
 		const balanceByMemberId = new Map<number, number>();
 		if (statsRes.status === 200) {
-			const stats = (statsRes.json?.stats as any[]) ?? [];
-			for (const s of stats) balanceByMemberId.set(s.member.id as number, s.balance as number);
+			const stats = (statsRes.json as CospendStatsJson | undefined)?.stats ?? [];
+			for (const s of stats) balanceByMemberId.set(s.member.id, s.balance);
 		}
-		return (membersRes.json as any[]).map((m) => ({
-			ihmId: m.id as number,
-			name: m.name as string,
-			weight: (m.weight as number | undefined) ?? 1.0,
-			balance: balanceByMemberId.get(m.id as number) ?? 0,
+		return (membersRes.json as CospendMemberJson[]).map((m) => ({
+			ihmId: m.id,
+			name: m.name,
+			weight: m.weight ?? 1.0,
+			balance: balanceByMemberId.get(m.id) ?? 0,
 		}));
 	}
 
 	async fetchBills(): Promise<IhmBill[]> {
 		const res = await requestUrl({ url: `${this.base()}/bills`, headers: this.headers(), throw: false });
 		if (res.status !== 200) throw new IhmApiError(res.status, res.text);
-		const list = (res.json?.bills as any[]) ?? [];
+		const list = (res.json as CospendBillsResponseJson | undefined)?.bills ?? [];
 		return list.map((b) => {
-			const owersRaw: any[] = b.owers ?? [];
-			const categoryId = b.categoryid as number | undefined;
+			const owersRaw = b.owers ?? [];
+			const categoryId = b.categoryid;
 			const billType: IhmBillType = categoryId === REIMBURSEMENT_CATEGORY_ID ? 'reimbursement' : 'expense';
 			return {
-				ihmId: b.id as number,
-				what: b.what as string,
-				payerIhmId: b.payer_id as number,
-				owerIhmIds: owersRaw.map((o) => (typeof o === 'object' ? o.id : o) as number),
+				ihmId: b.id,
+				what: b.what,
+				payerIhmId: b.payer_id,
+				owerIhmIds: owersRaw.map((o) => (typeof o === 'object' ? o.id : o)),
 				amount: Number(b.amount),
-				date: b.date as string,
+				date: b.date,
 				billType,
 				// 0 = "keine Kategorie" bei Cospend, -11 ist der reine
 				// Reimbursement-Sentinel (kein echtes Kategorie-Konzept, siehe
 				// billType oben) — beide auf `null` normalisiert, damit
 				// `nativeCategoryId` hier dieselbe Bedeutung hat wie bei IHM.
 				nativeCategoryId: categoryId && categoryId !== REIMBURSEMENT_CATEGORY_ID ? categoryId : null,
-				paymentModeId: (b.paymentmodeid as number | undefined) || undefined,
+				paymentModeId: b.paymentmodeid || undefined,
 			} satisfies IhmBill;
 		});
 	}
@@ -156,8 +199,8 @@ export class CospendClient implements ExpenseClient {
 	async fetchPaymentModes(): Promise<PaymentMode[]> {
 		const res = await requestUrl({ url: this.base(), headers: this.headers(), throw: false });
 		if (res.status !== 200) return [];
-		const modes = (res.json?.paymentmodes as Record<string, any>) ?? {};
-		return Object.values(modes).map((m) => ({ id: m.id as number, name: m.name as string, icon: m.icon as string }));
+		const modes = (res.json as CospendProjectInfoJson | undefined)?.paymentmodes ?? {};
+		return Object.values(modes).map((m) => ({ id: m.id, name: m.name, icon: m.icon }));
 	}
 
 	private parseIdResponse(body: string): number {
@@ -237,8 +280,8 @@ export class CospendClient implements ExpenseClient {
 	async fetchSettlement(): Promise<SettlementTransaction[]> {
 		const res = await requestUrl({ url: `${this.base()}/settle`, headers: this.headers(), throw: false });
 		if (res.status !== 200) throw new IhmApiError(res.status, res.text);
-		const transactions = (res.json?.transactions as any[]) ?? [];
-		return transactions.map((t) => ({ fromIhmId: t.from as number, toIhmId: t.to as number, amount: t.amount as number }));
+		const transactions = (res.json as CospendSettleResponseJson | undefined)?.transactions ?? [];
+		return transactions.map((t) => ({ fromIhmId: t.from, toIhmId: t.to, amount: t.amount }));
 	}
 
 	/** Legt `cat` als echte, freie Cospend-Projekt-Kategorie an (Farbe: kein
@@ -254,7 +297,7 @@ export class CospendClient implements ExpenseClient {
 	async fetchNativeCategories(): Promise<{ id: number; label: string; emoji: string }[]> {
 		const res = await requestUrl({ url: this.base(), headers: this.headers(), throw: false });
 		if (res.status !== 200) return [];
-		const categories = (res.json?.categories as Record<string, { id: number; name: string; icon: string }>) ?? {};
+		const categories = (res.json as CospendProjectInfoJson | undefined)?.categories ?? {};
 		return Object.values(categories).map((c) => ({ id: c.id, label: c.name, emoji: c.icon }));
 	}
 
@@ -287,7 +330,7 @@ export class CospendClient implements ExpenseClient {
 	private async findCategoryByName(name: string): Promise<number | null> {
 		const res = await requestUrl({ url: this.base(), headers: this.headers(), throw: false });
 		if (res.status !== 200) return null;
-		const categories = (res.json?.categories as Record<string, { id: number; name: string }>) ?? {};
+		const categories = (res.json as CospendProjectInfoJson | undefined)?.categories ?? {};
 		const needle = name.trim().toLowerCase();
 		const match = Object.values(categories).find((c) => c.name.trim().toLowerCase() === needle);
 		return match?.id ?? null;

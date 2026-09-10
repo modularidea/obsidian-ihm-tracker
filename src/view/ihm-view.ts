@@ -138,7 +138,7 @@ export class IhmView extends ItemView {
 			// Settings gelöscht), sonst wie bisher das erste in der Liste.
 			const last = this.plugin.settings.lastSelectedProjectId;
 			const lastStillExists = last && this.plugin.settings.projects.some((p) => p.id === last);
-			this.selectedProjectId = lastStillExists ? last! : this.plugin.settings.projects[0]!.id;
+			this.selectedProjectId = lastStillExists ? last : this.plugin.settings.projects[0]!.id;
 		}
 		if (this.selectedProjectId) {
 			await this.sync();
@@ -992,7 +992,7 @@ export class IhmView extends ItemView {
 		const row = card.createDiv({ cls: 'ihm-bill-row' });
 
 		if (this.bulkMode) {
-			const checkbox = row.createEl('input', { cls: 'ihm-bill-checkbox', attr: { type: 'checkbox', tabindex: '-1' } }) as HTMLInputElement;
+			const checkbox = row.createEl('input', { cls: 'ihm-bill-checkbox', attr: { type: 'checkbox', tabindex: '-1' } });
 			checkbox.checked = this.selectedBillIds.has(bill.ihmId);
 		} else {
 			row.createDiv({ cls: 'ihm-bill-icon', text: catDef.emoji });
@@ -1062,7 +1062,11 @@ export class IhmView extends ItemView {
 				}
 			},
 			onSubmit: (result) => (existing ? this.updateBillFromForm(project, existing, result) : this.createBill(project, result)),
-			onDelete: existing ? () => this.deleteBill(existing) : undefined,
+			onDelete: existing
+				? () => {
+						void this.deleteBill(existing);
+					}
+				: undefined,
 		});
 	}
 

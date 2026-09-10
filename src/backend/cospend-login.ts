@@ -24,6 +24,13 @@ export interface CospendProjectSummary {
 	name: string;
 }
 
+// Wire-Format-Typ für `res.json` (Obsidian typisiert `RequestUrlResponse.json`
+// als `any`).
+interface CospendProjectJson {
+	id: string;
+	name: string;
+}
+
 function base(serverUrl: string): string {
 	return serverUrl.endsWith('/') ? serverUrl.slice(0, -1) : serverUrl;
 }
@@ -74,7 +81,7 @@ export async function fetchCospendProjects(serverUrl: string, loginName: string,
 		throw: false,
 	});
 	if (res.status !== 200) throw new Error(`Projekte konnten nicht geladen werden (${res.status})`);
-	return (res.json as any[]).map((p) => ({ id: p.id as string, name: p.name as string }));
+	return (res.json as CospendProjectJson[]).map((p) => ({ id: p.id, name: p.name }));
 }
 
 /** Legt ein neues Cospend-Projekt für den verbundenen Nutzer an (Nutzerwunsch
@@ -92,7 +99,7 @@ export async function createCospendProject(serverUrl: string, loginName: string,
 		throw: false,
 	});
 	if (res.status !== 200) {
-		const message = (res.json as any)?.[0] ?? res.text;
+		const message = (res.json as string[] | undefined)?.[0] ?? res.text;
 		throw new Error(`Projekt konnte nicht angelegt werden — ${message}`);
 	}
 }

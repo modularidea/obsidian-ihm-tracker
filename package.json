@@ -14,8 +14,8 @@
 	"keywords": [],
 	"license": "0-BSD",
 	"dependencies": {
-		"jspdf": "^2.5.2",
-		"jspdf-autotable": "^3.8.4",
+		"jspdf": "^4.2.1",
+		"jspdf-autotable": "^5.0.8",
 		"xlsx": "^0.18.5"
 	},
 	"devDependencies": {

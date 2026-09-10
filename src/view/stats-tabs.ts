@@ -217,7 +217,7 @@ export function renderMembersTab(root: HTMLElement, bills: IhmBill[], members: I
 			for (const [catId, val] of top3) {
 				const def = categoryDef(catId, categories);
 				const pct = catTotal > 0 ? (val / catTotal) * 100 : 0;
-				chips.createEl('span', { cls: 'ihm-chip', text: `${def.emoji} ${def.label} ${pct.toFixed(0)}%` });
+				chips.createSpan({ cls: 'ihm-chip', text: `${def.emoji} ${def.label} ${pct.toFixed(0)}%` });
 			}
 		}
 	}

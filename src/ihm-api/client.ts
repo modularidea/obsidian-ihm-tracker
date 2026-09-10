@@ -27,6 +27,38 @@ export interface IhmMemberRaw {
 	balance: number;
 }
 
+// Wire-Format-Typen für `res.json` (Obsidian typisiert `RequestUrlResponse.json`
+// als `any` — diese Interfaces geben dem Response-Body einmal einen Typ, statt
+// bei jedem einzelnen Property-Zugriff unten `as X` zu casten.
+interface IhmMemberJson {
+	id: number;
+	name: string;
+	weight?: number;
+}
+
+interface IhmStatsEntryJson {
+	member: { id: number };
+	balance: number;
+}
+
+interface IhmBillOwerJson {
+	id: number;
+	weight?: number;
+}
+
+interface IhmBillJson {
+	id: number;
+	what: string;
+	payer_id: number;
+	owers?: (IhmBillOwerJson | number)[];
+	amount: number;
+	converted_amount?: number;
+	date: string;
+	bill_type?: string;
+	external_link?: string;
+	categoryid?: number | null;
+}
+
 export interface IhmBillCreate {
 	what: string;
 	payerIhmId: number;
@@ -103,7 +135,7 @@ export class IhateMoneyClient implements ExpenseClient {
 		try {
 			const res = await requestUrl({ url: this.url(''), headers: this.headers(), throw: false });
 			if (res.status !== 200) return 'EUR';
-			const currency = res.json?.default_currency as string | undefined;
+			const currency = (res.json as { default_currency?: string } | undefined)?.default_currency;
 			return currency && currency !== 'XXX' ? currency : 'EUR';
 		} catch {
 			return 'EUR';
@@ -123,7 +155,7 @@ export class IhateMoneyClient implements ExpenseClient {
 		try {
 			const res = await requestUrl({ url: this.url('/bills'), headers: this.headers(), throw: false });
 			if (res.status !== 200) return false;
-			const decoded = res.json;
+			const decoded = res.json as IhmBillJson[] | { bills: IhmBillJson[] };
 			const list = Array.isArray(decoded) ? decoded : decoded?.bills;
 			return Array.isArray(list) && list.length > 0 && Object.prototype.hasOwnProperty.call(list[0], 'categoryid');
 		} catch {
@@ -151,16 +183,16 @@ export class IhateMoneyClient implements ExpenseClient {
 			requestUrl({ url: this.url('/statistics'), headers: this.headers(), throw: false }),
 		]);
 		if (membersRes.status !== 200) throw new IhmApiError(membersRes.status, membersRes.text);
-		const list = membersRes.json as any[];
+		const list = membersRes.json as IhmMemberJson[];
 		const balanceByMemberId = new Map<number, number>();
 		if (statsRes.status === 200) {
-			for (const s of statsRes.json as any[]) balanceByMemberId.set(s.member.id as number, s.balance as number);
+			for (const s of statsRes.json as IhmStatsEntryJson[]) balanceByMemberId.set(s.member.id, s.balance);
 		}
 		return list.map((m) => ({
-			ihmId: m.id as number,
-			name: m.name as string,
-			weight: (m.weight as number | undefined) ?? 1.0,
-			balance: balanceByMemberId.get(m.id as number) ?? 0,
+			ihmId: m.id,
+			name: m.name,
+			weight: m.weight ?? 1.0,
+			balance: balanceByMemberId.get(m.id) ?? 0,
 		}));
 	}
 
@@ -172,18 +204,18 @@ export class IhateMoneyClient implements ExpenseClient {
 	async fetchBills(): Promise<IhmBill[]> {
 		const res = await requestUrl({ url: this.url('/bills'), headers: this.headers(), throw: false });
 		if (res.status !== 200) throw new IhmApiError(res.status, res.text);
-		const decoded = res.json;
-		const list: any[] = Array.isArray(decoded) ? decoded : decoded.bills;
+		const decoded = res.json as IhmBillJson[] | { bills: IhmBillJson[] };
+		const list: IhmBillJson[] = Array.isArray(decoded) ? decoded : decoded.bills;
 		return list.map((b) => {
-			const owersRaw: any[] = b.owers ?? [];
+			const owersRaw = b.owers ?? [];
 			const billType: IhmBillType = b.bill_type === 'Reimbursement' ? 'reimbursement' : 'expense';
 			return {
-				ihmId: b.id as number,
-				what: b.what as string,
-				payerIhmId: b.payer_id as number,
-				owerIhmIds: owersRaw.map((o) => (typeof o === 'object' ? o.id : o) as number),
+				ihmId: b.id,
+				what: b.what,
+				payerIhmId: b.payer_id,
+				owerIhmIds: owersRaw.map((o) => (typeof o === 'object' ? o.id : o)),
 				amount: Number(b.converted_amount ?? b.amount),
-				date: b.date as string,
+				date: b.date,
 				billType,
 				externalLink: b.external_link || undefined,
 				// 'categoryid' in b: unterscheidet "Server liefert das Feld,
@@ -191,7 +223,7 @@ export class IhateMoneyClient implements ExpenseClient {
 				// Feld gar nicht" (stock-IHM) — reines `b.categoryid ?? null`
 				// würde beide Fälle auf null zusammenfallen lassen und damit
 				// nativeCategorySupport implizit falsch signalisieren.
-				nativeCategoryId: 'categoryid' in b ? ((b.categoryid as number | null) ?? null) : undefined,
+				nativeCategoryId: 'categoryid' in b ? (b.categoryid ?? null) : undefined,
 			} satisfies IhmBill;
 		});
 	}
@@ -256,8 +288,8 @@ export class IhateMoneyClient implements ExpenseClient {
 		const asInt = Number(body.trim());
 		if (!Number.isNaN(asInt)) return asInt;
 		try {
-			const j = JSON.parse(body);
-			if (j?.id != null) return Number(j.id);
+			const j = JSON.parse(body) as { id?: number | string };
+			if (j.id != null) return Number(j.id);
 		} catch {
 			/* fällt durch zu Error unten */
 		}

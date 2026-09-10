@@ -20,7 +20,13 @@ import { formatCurrency } from '../format';
 // CJS-Bundling zerstört bei diesem Paket den `default`-Export (`.default`
 // landet als Namespace-Objekt statt Funktion). `applyPlugin` ist ein
 // benannter Export und bleibt beim Bundling intakt — verifiziert per
-// isoliertem esbuild-Bundle-Test.
+// isoliertem esbuild-Bundle-Test. Nach Upgrade auf jspdf 4.2.1/
+// jspdf-autotable 5.0.8 (2026-09-10, Dependency-Advisory-Fix) erneut per
+// isoliertem esbuild-Bundle-Test verifiziert: `applyPlugin` funktioniert mit
+// den neuen Versionen weiterhin unverändert (esbuilds Default-`platform:
+// browser` lädt jspdfs ESM-Build, das ein intaktes `.API`-Objekt hat — ein
+// Test mit `platform: node`, wie unser esbuild.config.mjs es NICHT setzt,
+// crasht dagegen, weil dort jspdfs CJS-Node-Build ohne `.API` geladen wird).
 applyPlugin(jsPDF);
 
 // jspdf-autotable liefert in dieser Version kein `declare module 'jspdf'`

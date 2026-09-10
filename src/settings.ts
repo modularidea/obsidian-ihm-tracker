@@ -94,7 +94,7 @@ export class IhmTrackerSettingTab extends PluginSettingTab {
 			.setName('Kategorie-Ordner im Vault')
 			.setDesc(
 				'Hier liegen die ihm-categories-<projekt>.json-Dateien — synct über denselben Mechanismus wie der Rest deines Vaults. ' +
-					'Ordnername mit führendem "." (Standard) bleibt im Obsidian-Datei-Explorer versteckt, wie .obsidian/.trash — ' +
+					`Ordnername mit führendem "." (Standard) bleibt im Obsidian-Datei-Explorer versteckt, wie ${this.app.vault.configDir}/.trash — ` +
 					'funktional macht das keinen Unterschied, nur die Sichtbarkeit im Explorer.',
 			)
 			.addText((text) =>

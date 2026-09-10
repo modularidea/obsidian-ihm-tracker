@@ -13,12 +13,16 @@ export default class IhmTrackerPlugin extends Plugin {
 
 		this.registerView(IHM_VIEW_TYPE, (leaf) => new IhmView(leaf, this));
 
-		this.addRibbonIcon('euro', 'IHM Tracker öffnen', () => this.activateView());
+		this.addRibbonIcon('euro', 'IHM Tracker öffnen', () => {
+			void this.activateView();
+		});
 
 		this.addCommand({
-			id: 'open-ihm-tracker',
-			name: 'IHM Tracker öffnen',
-			callback: () => this.activateView(),
+			id: 'open',
+			name: 'Öffnen',
+			callback: () => {
+				void this.activateView();
+			},
 		});
 
 		this.addSettingTab(new IhmTrackerSettingTab(this.app, this));
@@ -86,7 +90,7 @@ export default class IhmTrackerPlugin extends Plugin {
 			leaf = workspace.getRightLeaf(false);
 			await leaf?.setViewState({ type: IHM_VIEW_TYPE, active: true });
 		}
-		if (leaf) workspace.revealLeaf(leaf);
+		if (leaf) await workspace.revealLeaf(leaf);
 		return leaf?.view instanceof IhmView ? leaf.view : null;
 	}
 }
