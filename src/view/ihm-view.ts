@@ -81,6 +81,7 @@ export class IhmView extends ItemView {
 	private filtersExpanded = false;
 	private isWide = false;
 	private resizeObserver?: ResizeObserver;
+	private visualViewportHandler?: () => void;
 	/** `'new'` = Anlege-Formular aktiv, `IhmBill` = Bearbeiten-Formular für
 	 * diese Bill aktiv, `null` = kein Formular (Liste/Detail-Leerzustand). */
 	private editingBill: IhmBill | 'new' | null = null;
@@ -167,10 +168,35 @@ export class IhmView extends ItemView {
 			}
 		});
 		this.resizeObserver.observe(this.contentEl);
+
+		// iOS: `height:100%` (siehe styles.css `.ihm-tracker-view`) reagiert
+		// NICHT auf die visuelle Tastatur-Verkleinerung — nur der Layout-
+		// Viewport bleibt unverändert, wodurch unsere View über den
+		// tatsächlich sichtbaren Bereich hinausragt und Obsidians eigenes
+		// unteres Mobile-UI-Element (View-Switcher) sich mit unserem letzten
+		// sichtbaren Inhalt überlappt (Nutzer-Feedback 2026-09-10, Screenshot:
+		// Overlay über der Tastatur beim Titel-Editieren). `visualViewport`
+		// kennt die tatsächlich sichtbare Höhe — setzt sie explizit als
+		// Inline-Höhe, überschreibt damit `height:100%` nur bei Bedarf
+		// (schließt sich die Tastatur, feuert erneut ein `resize` mit der
+		// vollen Höhe). Auf Desktop faktisch ein No-Op (kein
+		// Tastatur-bedingtes Schrumpfen dort). `window.visualViewport` ist in
+		// älteren WebViews ggf. `undefined` — dann bleibt es beim
+		// CSS-`height:100%`-Verhalten.
+		if (window.visualViewport) {
+			this.visualViewportHandler = () => {
+				const vv = window.visualViewport;
+				if (vv) this.contentEl.setCssStyles({ height: `${vv.height}px` });
+			};
+			window.visualViewport.addEventListener('resize', this.visualViewportHandler);
+		}
 	}
 
 	async onClose(): Promise<void> {
 		this.resizeObserver?.disconnect();
+		if (this.visualViewportHandler) {
+			window.visualViewport?.removeEventListener('resize', this.visualViewportHandler);
+		}
 	}
 
 	private currentProject(): IhmProjectConfig | null {
@@ -258,8 +284,14 @@ export class IhmView extends ItemView {
 		// Scroll-Positionen aus dem noch alten DOM sichern, bevor es gleich
 		// weggeworfen wird (siehe `listScrollTop`-Kommentar an der Feld-
 		// Deklaration).
-		const prevListPane = root.querySelector<HTMLElement>('.ihm-bills-list-pane');
-		if (prevListPane) this.listScrollTop = prevListPane.scrollTop;
+		// `.ihm-bill-scroll-area` (nicht mehr `.ihm-bills-list-pane`/
+		// `.ihm-tab-content` selbst) trägt jetzt den tatsächlichen Beleg-
+		// Listen-Scroll, siehe `renderBillsListPane()` — gilt seit diesem
+		// Umbau für schmales UND breites Layout gleichermaßen (vorher nur für
+		// breit erfasst, im schmalen Layout lief das bisher unbeabsichtigt
+		// über `tabScrollTop`/`.ihm-tab-content` mit).
+		const prevScrollArea = root.querySelector<HTMLElement>('.ihm-bill-scroll-area');
+		if (prevScrollArea) this.listScrollTop = prevScrollArea.scrollTop;
 		const prevTabContent = root.querySelector<HTMLElement>('.ihm-tab-content');
 		if (prevTabContent) this.tabScrollTop = prevTabContent.scrollTop;
 
@@ -780,11 +812,22 @@ export class IhmView extends ItemView {
 	}
 
 	private renderBillsListPane(pane: HTMLElement): void {
-		// Filter-Panel wird jetzt direkt in `render()` in `.ihm-header`
-		// gerendert (nicht-scrollend, siehe dort) statt hier.
-		this.renderBulkBar(pane);
+		// `pane` selbst (`.ihm-tab-content` schmal, `.ihm-bills-list-pane`
+		// breit) scrollt NICHT mehr direkt — neuer innerer
+		// `.ihm-bill-scroll-area`-Wrapper übernimmt das Scrollen, `renderFab()`
+		// bleibt Kind von `pane` selbst. Grund: der FAB braucht einen NICHT
+		// scrollenden Bezugsrahmen für `position:absolute` — als Kind eines
+		// tatsächlich überlaufenden `overflow:auto`-Containers wird er Teil
+		// von dessen "scrollable overflow" und scrollt sichtbar mit (Nutzer-
+		// Feedback 2026-09-10, iOS-Screenshot: FAB tauchte mitten in der Liste
+		// auf statt am unteren Rand zu schweben).
+		const scrollArea = pane.createDiv({ cls: 'ihm-bill-scroll-area' });
 
-		const list = pane.createDiv({ cls: 'ihm-bill-list' });
+		// Filter-Panel wird direkt in `render()` in `.ihm-header` gerendert
+		// (nicht-scrollend, siehe dort) statt hier.
+		this.renderBulkBar(scrollArea);
+
+		const list = scrollArea.createDiv({ cls: 'ihm-bill-list' });
 		const sorted = this.sortBills(this.filteredBills());
 
 		if (sorted.length === 0) {
@@ -800,12 +843,8 @@ export class IhmView extends ItemView {
 			}
 		}
 
+		scrollArea.scrollTop = this.listScrollTop;
 		this.renderFab(pane);
-		// Nur im breiten Layout wirksam, wo `pane` selbst scrollt
-		// (`.ihm-bills-list-pane`, eigenes `overflow-y`) — im schmalen Layout
-		// ist `pane` nur ein normaler Container ohne eigenes Scrollen, hier ein
-		// No-Op.
-		pane.scrollTop = this.listScrollTop;
 	}
 
 	/** Kategorie/Sortierung/Gruppierung/Jahr — ausgeklappt über das Filter-

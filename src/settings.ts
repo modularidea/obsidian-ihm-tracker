@@ -41,6 +41,13 @@ export interface IhmTrackerSettings {
 	 * `sync/category-store.ts`) — reine Geräte-lokale UI-Präferenz, kein
 	 * Sync-relevanter Fachzustand. */
 	lastSelectedProjectId?: string;
+	/** Wo Ribbon-Icon/Command/Deeplink die View standardmäßig öffnen
+	 * (Nutzerwunsch 2026-09-10, v.a. Mobile: rechte Sidebar öffnet dort als
+	 * schmales Slide-in-Panel statt als vollwertiger Tab neben den Notizen).
+	 * `'sidebar'` = bisheriges Verhalten (`workspace.getRightLeaf()`,
+	 * Default — keine Verhaltensänderung für bestehende Nutzer), `'tab'` =
+	 * neuer Tab im Hauptbereich (`workspace.getLeaf(true)`). */
+	openLocation: 'sidebar' | 'tab';
 }
 
 export const DEFAULT_SETTINGS: IhmTrackerSettings = {
@@ -49,6 +56,7 @@ export const DEFAULT_SETTINGS: IhmTrackerSettings = {
 	autoSyncEnabled: true,
 	autoSyncIntervalMinutes: 10,
 	showSyncNotifications: true,
+	openLocation: 'sidebar',
 };
 
 // Plain Text-Input statt eigenem Emoji-Picker-Widget — der ECHTE native
@@ -140,6 +148,22 @@ export class IhmTrackerSettingTab extends PluginSettingTab {
 					this.plugin.settings.showSyncNotifications = value;
 					await this.plugin.saveSettings();
 				}),
+			);
+
+		new Setting(containerEl)
+			.setName('Öffnen in')
+			.setDesc(
+				'Wo Ribbon-Icon/Befehl/Homescreen-Shortcut die Ansicht öffnen. Seitenleiste öffnet dort auf dem Handy als schmales Panel; Tab öffnet einen vollwertigen Tab im Hauptbereich neben den Notizen.',
+			)
+			.addDropdown((dropdown) =>
+				dropdown
+					.addOption('sidebar', 'Seitenleiste')
+					.addOption('tab', 'Tab im Hauptbereich')
+					.setValue(this.plugin.settings.openLocation)
+					.onChange(async (value) => {
+						this.plugin.settings.openLocation = value === 'tab' ? 'tab' : 'sidebar';
+						await this.plugin.saveSettings();
+					}),
 			);
 
 		new Setting(containerEl).setName('Projekte').setHeading();

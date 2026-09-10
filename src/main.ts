@@ -87,7 +87,10 @@ export default class IhmTrackerPlugin extends Plugin {
 		const { workspace } = this.app;
 		let leaf: WorkspaceLeaf | null = workspace.getLeavesOfType(IHM_VIEW_TYPE)[0] ?? null;
 		if (!leaf) {
-			leaf = workspace.getRightLeaf(false);
+			// `'tab'` (Settings, Nutzerwunsch 2026-09-10): vollwertiger Tab im
+			// Hauptbereich statt der rechten Seitenleiste, die auf dem Handy nur
+			// als schmales Slide-in-Panel öffnet.
+			leaf = this.settings.openLocation === 'tab' ? workspace.getLeaf(true) : workspace.getRightLeaf(false);
 			await leaf?.setViewState({ type: IHM_VIEW_TYPE, active: true });
 		}
 		if (leaf) await workspace.revealLeaf(leaf);
