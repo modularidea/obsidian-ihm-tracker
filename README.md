@@ -35,8 +35,7 @@ Obsidian (Obsidian Sync, iCloud, Syncthing, Git, ...). No account, no extra serv
 
 ## Installing
 
-Not yet on the Obsidian Community Plugin store (pending review). Until then, install manually or
-via [BRAT](https://github.com/TfTHacker/obsidian42-brat):
+Install manually or via Obsdidian Community Plugins
 
 1. Download `main.js`, `manifest.json` and `styles.css` from the
    [latest release](../../releases/latest)
