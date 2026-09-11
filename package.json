@@ -1,6 +1,6 @@
 {
 	"name": "ihm-tracker",
-	"version": "0.10.2",
+	"version": "0.10.3",
 	"description": "IHateMoney client for Obsidian: view and edit shared-expense bills, auto-categorize them, statistics, PDF/Excel export.",
 	"main": "main.js",
 	"type": "module",

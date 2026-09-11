@@ -144,6 +144,9 @@ describe.each([
 		const billId = await fresh.createBill({ what: 'toys', payerIhmId: anna, owerIhmIds: [anna, ben], amount: 3, date: '2026-09-04', nativeCategoryId: id });
 		const bill = (await fresh.fetchBills()).find((b) => b.ihmId === billId);
 		expect(bill?.nativeCategoryId).toBe(id);
+		await fresh.deleteNativeCategory(id);
+		expect((await fresh.fetchNativeCategories()).some((c) => c.id === id)).toBe(false);
+		expect((await fresh.fetchBills()).find((b) => b.ihmId === billId)?.nativeCategoryId).toBeNull();
 		await fresh.deleteBill(billId);
 	});
 
