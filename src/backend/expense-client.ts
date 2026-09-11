@@ -2,6 +2,10 @@ import type { IhmBill, BillCategoryDef } from '../types';
 import type { IhmMemberRaw, IhmBillCreate } from '../ihm-api/client';
 import type { SettlementTransaction } from '../stats/aggregate';
 
+/** Optional server capabilities. IHM fork advertises them in the project
+ * info (`features`), Cospend has all of them, stock IHM none. */
+export type ServerFeature = 'categoryid' | 'categories' | 'paymentmodes' | 'settle' | 'repeat';
+
 // Common interface for the three backends (IHateMoney, Cospend, local).
 // Optional members exist only where the backend has a real server-side
 // counterpart; callers check `client.x?.()`.
@@ -17,18 +21,19 @@ export interface ExpenseClient {
 	createMember(name: string): Promise<number>;
 	updateMember(ihmMemberId: number, name: string): Promise<void>;
 	deleteMember(ihmMemberId: number): Promise<void>;
-	/** Server-side settlement plan (Cospend `/settle`). Not wired into the
-	 * settle tab yet — all backends use stats/aggregate.ts settleBalances(). */
+	/** Server capabilities; missing = none. */
+	fetchFeatures?(): Promise<Set<ServerFeature>>;
+	/** Server-side settlement plan (Cospend `/settle`, IHM fork). Not wired
+	 * into the settle tab yet — all backends use stats/aggregate.ts settleBalances(). */
 	fetchSettlement?(): Promise<SettlementTransaction[]>;
 	/** Creates `cat` as a native project category and returns its id, or null
 	 * when unsupported/failed. Caller stores it in BillCategoryDef.nativeCategoryId. */
 	pushCategory?(cat: BillCategoryDef): Promise<number | null>;
-	/** Project payment modes (Cospend). The bill form hides the field when
-	 * undefined/empty. */
+	/** Project payment modes. The bill form hides the field when empty. */
 	fetchPaymentModes?(): Promise<PaymentMode[]>;
 	/** Native category catalog (Cospend: project categories incl. its seeded
-	 * defaults; IHM fork: the fixed global list). Lets sync() import a
-	 * category that was set directly on the server by another client. */
+	 * defaults; IHM fork: global list + project categories). Lets sync()
+	 * import a category that was set directly on the server by another client. */
 	fetchNativeCategories?(): Promise<{ id: number; label: string; emoji: string }[]>;
 }
 

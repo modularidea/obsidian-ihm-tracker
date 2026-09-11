@@ -1,5 +1,5 @@
 import { Notice, setIcon } from 'obsidian';
-import { BillCategoryDef, IhmBill, TrainingDoc } from '../types';
+import { BillCategoryDef, BillRepeat, BillRepeatSettings, IhmBill, NO_REPEAT, TrainingDoc } from '../types';
 import { IhmMemberRaw } from '../ihm-api/client';
 import { classify } from '../categorize/classifier';
 import { categoryOf, computeShares } from '../stats/aggregate';
@@ -13,7 +13,19 @@ export interface BillFormResult {
 	date: string;
 	categoryId: string;
 	paymentModeId?: number;
+	/** Only when the form was rendered with `repeatSupported`. */
+	repeatSettings?: BillRepeatSettings;
 }
+
+const REPEAT_LABELS: [BillRepeat, string][] = [
+	['n', 'No'],
+	['d', 'Daily'],
+	['w', 'Weekly'],
+	['b', 'Every two weeks'],
+	['s', 'Semi-monthly'],
+	['m', 'Monthly'],
+	['y', 'Yearly'],
+];
 
 export interface BillFormOptions {
 	/** Active members plus any inactive ones referenced by `existing`. */
@@ -23,8 +35,10 @@ export interface BillFormOptions {
 	categories: BillCategoryDef[];
 	trainingDocs: TrainingDoc[];
 	currency: string;
-	/** Cospend only; undefined/empty hides the field. */
+	/** Undefined/empty hides the field. */
 	paymentModes?: { id: number; name: string; icon: string }[];
+	/** Backend materializes repeating bills (server feature "repeat"). */
+	repeatSupported?: boolean;
 	existing?: IhmBill;
 	defaultPayerIhmId?: number;
 	onSubmit: (result: BillFormResult) => Promise<void>;
@@ -153,6 +167,43 @@ export function renderBillForm(container: HTMLElement, opts: BillFormOptions): v
 		pmSelect.onchange = () => (paymentModeId = pmSelect.value ? Number(pmSelect.value) : undefined);
 	}
 
+	// ── Repeat (Cospend-style rule; the backend creates the copies) ──────
+	const repeatState: BillRepeatSettings = { ...(existing?.repeatSettings ?? NO_REPEAT) };
+	if (opts.repeatSupported) {
+		const repeatField = scrollArea.createDiv({ cls: 'ihm-form-field' });
+		repeatField.createDiv({ cls: 'ihm-form-label', text: 'Repeat' });
+		const row = repeatField.createDiv({ cls: 'ihm-form-repeat-row' });
+		const repeatSelect = row.createEl('select');
+		for (const [code, label] of REPEAT_LABELS) repeatSelect.createEl('option', { text: label, value: code });
+		repeatSelect.value = repeatState.repeat;
+		const every = row.createSpan({ cls: 'ihm-form-repeat-every' });
+		every.createSpan({ text: 'every' });
+		const freqInput = every.createEl('input', { attr: { type: 'number', min: '1', inputmode: 'numeric', title: 'Interval multiplier' } });
+		freqInput.value = String(repeatState.repeatFreq);
+		const untilRow = repeatField.createDiv({ cls: 'ihm-form-repeat-until' });
+		untilRow.createSpan({ text: 'until' });
+		const untilInput = untilRow.createEl('input', { attr: { type: 'date', title: 'Repeat until (optional)' } });
+		untilInput.value = repeatState.repeatUntil ?? '';
+		const allActiveLabel = repeatField.createEl('label', { cls: 'ihm-form-checkbox' });
+		const allActive = allActiveLabel.createEl('input', { attr: { type: 'checkbox' } });
+		allActive.checked = repeatState.repeatAllActive;
+		allActiveLabel.createSpan({ text: 'Split copies between all active participants' });
+		const syncVisibility = () => {
+			const on = repeatState.repeat !== 'n';
+			every.toggleClass('is-hidden', !on);
+			untilRow.toggleClass('is-hidden', !on);
+			allActiveLabel.toggleClass('is-hidden', !on);
+		};
+		repeatSelect.onchange = () => {
+			repeatState.repeat = repeatSelect.value as BillRepeat;
+			syncVisibility();
+		};
+		freqInput.oninput = () => (repeatState.repeatFreq = Math.max(1, Math.floor(Number(freqInput.value)) || 1));
+		untilInput.onchange = () => (repeatState.repeatUntil = untilInput.value || null);
+		allActive.onchange = () => (repeatState.repeatAllActive = allActive.checked);
+		syncVisibility();
+	}
+
 	titleInput.oninput = () => {
 		what = titleInput.value;
 		if (!existing && !categoryTouched) {
@@ -246,7 +297,16 @@ export function renderBillForm(container: HTMLElement, opts: BillFormOptions): v
 		saveBtn.disabled = true;
 		saveBtn.setText('Saving…');
 		try {
-			await opts.onSubmit({ what: what.trim(), payerIhmId, owerIhmIds: [...owerIhmIds], amount, date, categoryId, paymentModeId });
+			await opts.onSubmit({
+				what: what.trim(),
+				payerIhmId,
+				owerIhmIds: [...owerIhmIds],
+				amount,
+				date,
+				categoryId,
+				paymentModeId,
+				...(opts.repeatSupported ? { repeatSettings: { ...repeatState } } : {}),
+			});
 			// On success the caller re-renders and this form disappears.
 		} catch (e) {
 			new Notice(`Save failed — ${e instanceof Error ? e.message : String(e)}`);

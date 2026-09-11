@@ -2,10 +2,11 @@ import { ItemView, Menu, Notice, WorkspaceLeaf, setIcon } from 'obsidian';
 import type IhmTrackerPlugin from '../main';
 import { BillCategoryDef, IhmBill, IhmProjectConfig, OTHER_CATEGORY_ID, ProjectCategoryData, TrainingDoc } from '../types';
 import { formatCurrency, formatDate, monthLabel } from '../format';
-import { IhmMemberRaw } from '../ihm-api/client';
+import { IhmBillCreate, IhmMemberRaw } from '../ihm-api/client';
 import { createExpenseClient } from '../backend/create-client';
-import type { ExpenseClient, PaymentMode } from '../backend/expense-client';
+import type { ExpenseClient, PaymentMode, ServerFeature } from '../backend/expense-client';
 import { classify } from '../categorize/classifier';
+import { normalizeText } from '../categorize/text-match-utils';
 import { DEFAULT_CATEGORIES } from '../categorize/default-categories';
 import { categoryOf, isExpense, SettlementTransaction } from '../stats/aggregate';
 import { exportBillsPdf } from '../export/pdf-export';
@@ -73,8 +74,8 @@ export class IhmView extends ItemView {
 	private selectedBillIds = new Set<number>();
 	private exportPanelOpen = false;
 	private currency = 'EUR';
-	/** Cospend only. */
 	private paymentModes: PaymentMode[] = [];
+	private features = new Set<ServerFeature>();
 	private listScrollTop = 0;
 	private tabScrollTop = 0;
 	/** Slide direction for the next render(), set by the triggering action. */
@@ -837,6 +838,9 @@ export class IhmView extends ItemView {
 			row.createDiv({ cls: 'ihm-bill-icon', text: catDef.emoji });
 		}
 		row.createDiv({ cls: 'ihm-bill-title', text: bill.what, attr: { title: bill.what } });
+		if (bill.repeatSettings && bill.repeatSettings.repeat !== 'n') {
+			setIcon(row.createSpan({ cls: 'ihm-bill-repeat', attr: { title: 'Repeating bill' } }), 'repeat');
+		}
 		row.createDiv({ cls: 'ihm-bill-amount', text: formatCurrency(bill.amount, this.currency) });
 
 		const metaRow = card.createDiv({ cls: 'ihm-bill-meta-row' });
@@ -874,7 +878,8 @@ export class IhmView extends ItemView {
 			categories: this.categoryData.categories,
 			trainingDocs: this.categoryData.trainingDocs,
 			currency: this.currency,
-			paymentModes: project.backendType === 'cospend' ? this.paymentModes : undefined,
+			paymentModes: this.paymentModes,
+			repeatSupported: this.features.has('repeat'),
 			defaultPayerIhmId: project.lastPayerIhmId,
 			existing,
 			onBack: showBack ? goBack : undefined,
@@ -915,11 +920,11 @@ export class IhmView extends ItemView {
 		const cat = this.categoryData?.categories.find((c) => c.id === categoryId);
 		if (!cat) return null;
 		if (cat.nativeCategoryId != null) return cat.nativeCategoryId;
-		if (project.backendType === 'cospend' && client.pushCategory) {
+		if (client.pushCategory && (project.backendType === 'cospend' || this.features.has('categories'))) {
 			const pushed = await client.pushCategory(cat);
 			if (pushed != null) {
 				cat.nativeCategoryId = pushed;
-				const result = await this.plugin.categoryStore.mergeAndSave(project.id, this.categoryData!, false);
+				const result = await this.plugin.categoryStore.mergeAndSave(project.id, this.categoryData!, project.backendType === 'ihatemoney');
 				this.categoryData = result.data;
 				if (result.diverged) this.notifySyncConflict();
 			}
@@ -939,6 +944,7 @@ export class IhmView extends ItemView {
 			date: result.date,
 			nativeCategoryId,
 			paymentModeId: result.paymentModeId,
+			repeatSettings: result.repeatSettings,
 		});
 		const newBill: IhmBill = {
 			ihmId: newId,
@@ -951,6 +957,7 @@ export class IhmView extends ItemView {
 			categoryId: result.categoryId,
 			nativeCategoryId,
 			paymentModeId: result.paymentModeId,
+			repeatSettings: result.repeatSettings,
 		};
 		await this.persistCategoryChoice(newBill, result.categoryId);
 		if (project.lastPayerIhmId !== result.payerIhmId) {
@@ -963,24 +970,40 @@ export class IhmView extends ItemView {
 		await this.sync(true);
 	}
 
-	/** The form never changes the bill type, so it is carried over — IHM
-	 * resets `bill_type` to Expense when the field is missing. */
+	/** Every field the server knows, from the current bill — an update that
+	 * omits a field resets it to the server default (bill type → Expense,
+	 * repeat → none), so partial updates are never sent. */
+	private billPayload(bill: IhmBill): IhmBillCreate {
+		return {
+			what: bill.what,
+			payerIhmId: bill.payerIhmId,
+			owerIhmIds: bill.owerIhmIds,
+			amount: bill.amount,
+			date: bill.date,
+			externalLink: bill.externalLink,
+			billType: bill.billType,
+			paymentModeId: bill.paymentModeId,
+			repeatSettings: bill.repeatSettings,
+		};
+	}
+
 	private async updateBillFromForm(project: IhmProjectConfig, bill: IhmBill, result: BillFormResult): Promise<void> {
 		const client = createExpenseClient(project, this.app, this.plugin.settings.categoryStoreFolder);
 		const nativeCategoryId = await this.resolveNativeCategoryId(project, client, result.categoryId);
 		await client.updateBill(bill.ihmId, {
+			...this.billPayload(bill),
 			what: result.what,
 			payerIhmId: result.payerIhmId,
 			owerIhmIds: result.owerIhmIds,
 			amount: result.amount,
 			date: result.date,
-			externalLink: bill.externalLink,
-			billType: bill.billType,
 			nativeCategoryId,
 			paymentModeId: result.paymentModeId,
+			repeatSettings: result.repeatSettings ?? bill.repeatSettings,
 		});
 		bill.what = result.what;
 		bill.paymentModeId = result.paymentModeId;
+		if (result.repeatSettings) bill.repeatSettings = result.repeatSettings;
 		if (nativeCategoryId !== undefined) bill.nativeCategoryId = nativeCategoryId;
 		await this.persistCategoryChoice(bill, result.categoryId);
 		new Notice('Bill updated');
@@ -1031,17 +1054,7 @@ export class IhmView extends ItemView {
 	 * stays the source of truth). Carries the bill type, see updateBillFromForm. */
 	private async pushNativeCategory(project: IhmProjectConfig, client: ExpenseClient, bill: IhmBill, categoryId: string): Promise<number | null | undefined> {
 		const nativeId = await this.resolveNativeCategoryId(project, client, categoryId);
-		await client.updateBill(bill.ihmId, {
-			what: bill.what,
-			payerIhmId: bill.payerIhmId,
-			owerIhmIds: bill.owerIhmIds,
-			amount: bill.amount,
-			date: bill.date,
-			externalLink: bill.externalLink,
-			billType: bill.billType,
-			paymentModeId: bill.paymentModeId,
-			nativeCategoryId: nativeId,
-		});
+		await client.updateBill(bill.ihmId, { ...this.billPayload(bill), nativeCategoryId: nativeId });
 		bill.nativeCategoryId = nativeId;
 		return nativeId;
 	}
@@ -1129,16 +1142,31 @@ export class IhmView extends ItemView {
 		try {
 			const client = createExpenseClient(project, this.app, this.plugin.settings.categoryStoreFolder);
 			// 500ms floor so the sync icon completes at least a visible spin.
-			const [[members, bills, currency, paymentModes]] = await Promise.all([
-				Promise.all([client.fetchMembers(), client.fetchBills(), client.fetchCurrency(), client.fetchPaymentModes?.() ?? Promise.resolve([])]),
+			const [[members, bills, currency, paymentModes, features]] = await Promise.all([
+				Promise.all([
+					client.fetchMembers(),
+					client.fetchBills(),
+					client.fetchCurrency(),
+					client.fetchPaymentModes?.() ?? Promise.resolve([]),
+					client.fetchFeatures?.() ?? Promise.resolve(new Set<ServerFeature>()),
+				]),
 				new Promise<void>((resolve) => window.setTimeout(resolve, 500)),
 			]);
+			this.features = features;
 
-			// Any bill carrying the field (even null) proves server support.
-			if (!project.nativeCategorySupport && bills.some((b) => b.nativeCategoryId !== undefined)) {
+			// Advertised feature, or (older fork builds) any bill carrying the
+			// field — even null — proves server support.
+			const featureList = [...features].sort();
+			let settingsChanged = false;
+			if (!project.nativeCategorySupport && (features.has('categoryid') || bills.some((b) => b.nativeCategoryId !== undefined))) {
 				project.nativeCategorySupport = true;
-				await this.plugin.saveSettings();
+				settingsChanged = true;
 			}
+			if (JSON.stringify(project.serverFeatures ?? []) !== JSON.stringify(featureList)) {
+				project.serverFeatures = featureList;
+				settingsChanged = true;
+			}
+			if (settingsChanged) await this.plugin.saveSettings();
 
 			let categoryData = await this.plugin.categoryStore.load(project.id, project.backendType === 'ihatemoney');
 
@@ -1186,19 +1214,40 @@ export class IhmView extends ItemView {
 			}
 
 			const knownIds = new Set(categoryData.categories.map((c) => c.id));
+			// Categories set on the server by someone else (another plugin
+			// user, MoneyBuster, Cospend web) become training data here, so
+			// corrections propagate between users through the server.
+			const learned: TrainingDoc[] = [];
+			const hasDoc = (text: string, categoryId: string) => {
+				const key = normalizeText(text);
+				return [...categoryData.trainingDocs, ...learned].some((d) => d.categoryId === categoryId && normalizeText(d.text) === key);
+			};
 			for (const bill of bills) {
 				const override = categoryData.billOverrides[String(bill.ihmId)];
 				if (override && knownIds.has(override.categoryId)) {
 					bill.categoryId = override.categoryId;
 					continue;
 				}
-				// Server-set category wins over the classifier (display only,
-				// not persisted as an override — no training data from other
-				// clients).
 				const nativeMatch = bill.nativeCategoryId != null ? categoryData.categories.find((c) => c.nativeCategoryId === bill.nativeCategoryId) : undefined;
-				bill.categoryId = nativeMatch ? nativeMatch.id : classify(bill.what, categoryData.trainingDocs, categoryData.categories);
+				if (nativeMatch) {
+					bill.categoryId = nativeMatch.id;
+					if (isExpense(bill) && nativeMatch.id !== OTHER_CATEGORY_ID && !hasDoc(bill.what, nativeMatch.id)) {
+						learned.push({ text: bill.what, categoryId: nativeMatch.id, updatedAt: new Date().toISOString(), device: 'server' });
+					}
+					continue;
+				}
+				bill.categoryId = classify(bill.what, categoryData.trainingDocs, categoryData.categories);
 				// Training docs may still point at a deleted category.
 				if (!knownIds.has(bill.categoryId)) bill.categoryId = OTHER_CATEGORY_ID;
+			}
+			if (learned.length > 0) {
+				const result = await this.plugin.categoryStore.mergeAndSave(
+					project.id,
+					{ ...categoryData, trainingDocs: [...categoryData.trainingDocs, ...learned] },
+					project.backendType === 'ihatemoney',
+				);
+				categoryData = result.data;
+				if (result.diverged) this.notifySyncConflict();
 			}
 
 			this.members = members;

@@ -121,4 +121,74 @@ describe.each([
 		expect(members.find((m) => m.ihmId === carol)?.activated).toBe(false);
 		await client.deleteBill(billId);
 	});
+
+	it('fetchFeatures() advertises the fork extras only on the fork', async () => {
+		const features = await client.fetchFeatures();
+		expect(features.has('categories')).toBe(expectNativeCategorySupport);
+		expect(features.has('repeat')).toBe(expectNativeCategorySupport);
+	});
+
+	it('pushCategory() creates a project category (fork) or returns null (stock)', async () => {
+		const id = await client.pushCategory({ id: 'kids_x', label: 'Kids', emoji: '🧸', keywords: [] });
+		if (!expectNativeCategorySupport) {
+			expect(id).toBeNull();
+			return;
+		}
+		expect(id).toBeGreaterThan(0);
+		// same name → same id, no duplicate
+		const fresh = new IhateMoneyClient(serverUrl, projectId, password);
+		expect(await fresh.pushCategory({ id: 'kids_y', label: 'kids', emoji: '🧸', keywords: [] })).toBe(id);
+		const catalog = await fresh.fetchNativeCategories();
+		expect(catalog.find((c) => c.id === id)?.label).toBe('Kids');
+
+		const billId = await fresh.createBill({ what: 'toys', payerIhmId: anna, owerIhmIds: [anna, ben], amount: 3, date: '2026-09-04', nativeCategoryId: id });
+		const bill = (await fresh.fetchBills()).find((b) => b.ihmId === billId);
+		expect(bill?.nativeCategoryId).toBe(id);
+		await fresh.deleteBill(billId);
+	});
+
+	it('payment modes and repeat settings round-trip on the fork', async () => {
+		if (!expectNativeCategorySupport) return;
+		const fresh = new IhateMoneyClient(serverUrl, projectId, password);
+		const modes = await fresh.fetchPaymentModes();
+		expect(modes.map((m) => m.name)).toContain('Cash');
+		const cash = modes.find((m) => m.name === 'Cash')!;
+		const today = new Date().toISOString().slice(0, 10);
+		const billId = await fresh.createBill({
+			what: 'rent',
+			payerIhmId: anna,
+			owerIhmIds: [anna, ben],
+			amount: 100,
+			date: today,
+			paymentModeId: cash.id,
+			repeatSettings: { repeat: 'm', repeatFreq: 2, repeatUntil: null, repeatAllActive: true },
+		});
+		let bill = (await fresh.fetchBills()).find((b) => b.ihmId === billId);
+		expect(bill?.paymentModeId).toBe(cash.id);
+		expect(bill?.repeatSettings).toEqual({ repeat: 'm', repeatFreq: 2, repeatUntil: null, repeatAllActive: true });
+		// an update carrying the settings keeps them; category change only
+		await fresh.updateBill(billId, {
+			what: 'rent',
+			payerIhmId: anna,
+			owerIhmIds: [anna, ben],
+			amount: 100,
+			date: today,
+			paymentModeId: cash.id,
+			repeatSettings: bill!.repeatSettings,
+			nativeCategoryId: -3,
+		});
+		bill = (await fresh.fetchBills()).find((b) => b.ihmId === billId);
+		expect(bill?.repeatSettings?.repeat).toBe('m');
+		expect(bill?.nativeCategoryId).toBe(-3);
+		await fresh.deleteBill(billId);
+	});
+
+	it('fetchSettlement() mirrors the server plan on the fork', async () => {
+		if (!expectNativeCategorySupport) return;
+		const fresh = new IhateMoneyClient(serverUrl, projectId, password);
+		const billId = await fresh.createBill({ what: 'dinner', payerIhmId: anna, owerIhmIds: [anna, ben], amount: 20, date: '2026-09-05' });
+		const plan = await fresh.fetchSettlement();
+		expect(plan).toEqual([{ fromIhmId: ben, toIhmId: anna, amount: 10 }]);
+		await fresh.deleteBill(billId);
+	});
 });

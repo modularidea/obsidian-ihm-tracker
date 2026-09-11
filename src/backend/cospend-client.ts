@@ -1,8 +1,9 @@
 import { requestUrl } from 'obsidian';
 import { IhmBill, IhmBillType, BillCategoryDef } from '../types';
-import { IhmMemberRaw, IhmBillCreate, IhmApiError } from '../ihm-api/client';
+import { IhmMemberRaw, IhmBillCreate, IhmApiError, parseRepeat, repeatWire } from '../ihm-api/client';
 import type { SettlementTransaction } from '../stats/aggregate';
-import type { ExpenseClient, PaymentMode } from './expense-client';
+import type { ExpenseClient, PaymentMode, ServerFeature } from './expense-client';
+import { categoryColor } from '../categorize/cospend-category-map';
 
 // Nextcloud Cospend client using the authenticated `api-priv` routes (Basic
 // auth with Login-Flow-v2 credentials, see cospend-login.ts). Verified
@@ -46,6 +47,10 @@ interface CospendBillJson {
 	date: string;
 	categoryid?: number;
 	paymentmodeid?: number;
+	repeat?: string;
+	repeatfreq?: number;
+	repeatuntil?: string | null;
+	repeatallactive?: boolean;
 }
 
 interface CospendBillsResponseJson {
@@ -78,9 +83,9 @@ export class CospendClient implements ExpenseClient {
 		return `${b}/index.php/apps/cospend/api-priv/projects/${encodeURIComponent(this.projectId)}`;
 	}
 
-	private form(params: Record<string, string | number | undefined>): string {
+	private form(params: Record<string, unknown>): string {
 		const usp = new URLSearchParams();
-		for (const [k, v] of Object.entries(params)) if (v !== undefined) usp.set(k, String(v));
+		for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== null) usp.set(k, String(v));
 		return usp.toString();
 	}
 
@@ -110,6 +115,10 @@ export class CospendClient implements ExpenseClient {
 
 	async probeNativeCategorySupport(): Promise<boolean> {
 		return true;
+	}
+
+	async fetchFeatures(): Promise<Set<ServerFeature>> {
+		return new Set<ServerFeature>(['categoryid', 'categories', 'paymentmodes', 'settle', 'repeat']);
 	}
 
 	async fetchMembers(): Promise<IhmMemberRaw[]> {
@@ -149,6 +158,7 @@ export class CospendClient implements ExpenseClient {
 				// 0 = no category, -11 = reimbursement sentinel → both null.
 				nativeCategoryId: categoryId && categoryId !== REIMBURSEMENT_CATEGORY_ID ? categoryId : null,
 				paymentModeId: b.paymentmodeid || undefined,
+				repeatSettings: parseRepeat(b),
 			} satisfies IhmBill;
 		});
 	}
@@ -163,6 +173,7 @@ export class CospendClient implements ExpenseClient {
 			date: bill.date,
 			...(categoryId != null ? { categoryid: categoryId } : {}),
 			...(bill.paymentModeId != null ? { paymentmodeid: bill.paymentModeId } : {}),
+			...repeatWire(bill.repeatSettings),
 		});
 	}
 
@@ -267,7 +278,7 @@ export class CospendClient implements ExpenseClient {
 				url: `${this.base()}/category`,
 				method: 'POST',
 				headers: this.headers(),
-				body: this.form({ name: cat.label, icon: cat.emoji, color: hashColor(cat.id) }),
+				body: this.form({ name: cat.label, icon: cat.emoji, color: categoryColor(cat.id) }),
 				throw: false,
 			});
 			if (res.status !== 200 && res.status !== 201) return null;
@@ -276,11 +287,4 @@ export class CospendClient implements ExpenseClient {
 			return null;
 		}
 	}
-}
-
-/** Deterministic color per category id — only cosmetic for Cospend's web UI. */
-function hashColor(seed: string): string {
-	let hash = 0;
-	for (let i = 0; i < seed.length; i++) hash = (hash * 31 + seed.charCodeAt(i)) >>> 0;
-	return `#${(hash & 0xffffff).toString(16).padStart(6, '0')}`;
 }

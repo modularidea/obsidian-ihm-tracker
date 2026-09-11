@@ -371,6 +371,17 @@
 	white-space: nowrap;
 }
 
+.ihm-bill-repeat {
+	flex: 0 0 auto;
+	display: inline-flex;
+	color: var(--text-muted);
+}
+
+.ihm-bill-repeat svg {
+	width: 14px;
+	height: 14px;
+}
+
 .ihm-bill-amount {
 	flex: 0 0 auto;
 	font-weight: 700;
@@ -948,4 +959,38 @@
 	padding: var(--size-4-1, 4px) var(--size-4-2, 8px);
 	border-radius: var(--radius-s, 4px);
 	font-size: var(--font-ui-smaller);
+}
+
+/* Repeat rule in the bill form: select + "every N", "until <date>",
+   checkbox — sub-rows hidden while repeat is "No". */
+.ihm-form-repeat-row,
+.ihm-form-repeat-every,
+.ihm-form-repeat-until {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-2, 8px);
+	flex-wrap: wrap;
+}
+
+.ihm-form-repeat-until {
+	margin-top: var(--size-4-2, 8px);
+}
+
+.ihm-form-repeat-every input {
+	width: 4.5em;
+}
+
+.ihm-form-checkbox {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-2, 8px);
+	margin-top: var(--size-4-2, 8px);
+	font-size: var(--font-ui-small);
+	color: var(--text-muted);
+}
+
+.ihm-form-repeat-every.is-hidden,
+.ihm-form-repeat-until.is-hidden,
+.ihm-form-checkbox.is-hidden {
+	display: none;
 }

@@ -535,14 +535,16 @@ export class IhmTrackerSettingTab extends PluginSettingTab {
 	}
 
 	/** Label/emoji/add/delete only; keywords grow through training data. The
-	 * server-mapping dropdown exists only for the IHM fork (fixed list); for
-	 * Cospend the native id is created automatically on first push. */
+	 * server-mapping dropdown exists only for IHM fork builds without project
+	 * categories; otherwise the native id is created automatically on push. */
 	private async renderCategories(container: HTMLElement, project: IhmProjectConfig): Promise<void> {
 		container.empty();
 		container.createEl('p', { text: 'Loading categories…' });
 		const data = await this.plugin.categoryStore.load(project.id, project.backendType === 'ihatemoney');
 		container.empty();
-		const showServerPicker = project.backendType === 'ihatemoney';
+		// Only for fork builds without free project categories; with the
+		// "categories" feature custom categories are pushed automatically.
+		const showServerPicker = project.backendType === 'ihatemoney' && !(project.serverFeatures ?? []).includes('categories');
 
 		for (const cat of data.categories) {
 			let emojiValue = cat.emoji;

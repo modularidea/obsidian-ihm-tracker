@@ -1,24 +1,20 @@
-# Builds IHateMoney from the pinned upstream commit + ihm-categoryid.patch
-# (see README.md) instead of vendoring a full fork copy.
+# Builds the IHM Tracker server fork (modularidea/ihatemoney-cat) straight
+# from GitHub — for users without a local checkout. The plugin's own
+# docker-compose.yml builds from the sibling checkout ../../ihatemoney-cat
+# instead (see there).
 #
-# Stage 1: fetch upstream source and apply the patch.
-FROM python:3.11-alpine AS patched-source
+# Stage 1: fetch the fork branch.
+FROM python:3.11-alpine AS fork-source
 
 RUN apk add --no-cache git
 
-# "Back to development: 7.2.2" — the commit the patch was created against.
-# Bump this when rebasing.
-ARG IHATEMONEY_REF=e66a7672e8e5c41549bf53c4a824c72c43ab9079
+ARG IHATEMONEY_FORK_REPO=https://github.com/modularidea/ihatemoney-cat.git
+ARG IHATEMONEY_FORK_BRANCH=feat/categoryid
 
-RUN git clone https://github.com/spiral-project/ihatemoney.git /src \
-	&& cd /src \
-	&& git checkout ${IHATEMONEY_REF}
-
-COPY ihm-categoryid.patch /tmp/ihm-categoryid.patch
-RUN cd /src && git apply --verbose /tmp/ihm-categoryid.patch
+RUN git clone --depth 1 --branch ${IHATEMONEY_FORK_BRANCH} ${IHATEMONEY_FORK_REPO} /src
 
 # Stage 2: identical to the official ihatemoney/Dockerfile, with ADD replaced
-# by COPY --from=patched-source.
+# by COPY --from=fork-source.
 FROM python:3.11-alpine
 
 ENV PORT="8000" \
@@ -48,7 +44,7 @@ ENV DEBUG="False" \
 	ENABLE_CAPTCHA="False" \
 	LEGAL_LINK=""
 
-COPY --from=patched-source /src /src
+COPY --from=fork-source /src /src
 
 RUN echo "**** install build dependencies ****" &&\
 	apk add --no-cache --virtual=build-dependencies \

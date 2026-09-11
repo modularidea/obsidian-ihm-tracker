@@ -1,7 +1,8 @@
 import { App, normalizePath } from 'obsidian';
-import { IhmBill } from '../types';
+import { BillRepeatSettings, IhmBill } from '../types';
 import { IhmMemberRaw, IhmBillCreate } from '../ihm-api/client';
-import type { ExpenseClient } from './expense-client';
+import type { ExpenseClient, ServerFeature } from './expense-client';
+import { nextRepeatDate } from '../stats/repeat';
 import { memberStats } from '../stats/aggregate';
 
 // Server-less project: bills and members live in one vault JSON file next to
@@ -24,6 +25,7 @@ interface LocalBillEntry {
 	amount: number;
 	date: string;
 	billType: 'expense' | 'reimbursement';
+	repeat?: BillRepeatSettings;
 }
 
 interface LocalProjectData {
@@ -86,6 +88,10 @@ export class LocalClient implements ExpenseClient {
 		return false;
 	}
 
+	async fetchFeatures(): Promise<Set<ServerFeature>> {
+		return new Set<ServerFeature>(['repeat']);
+	}
+
 	async fetchMembers(): Promise<IhmMemberRaw[]> {
 		const data = await this.load();
 		const members = data.members.map((m) => ({ ihmId: m.ihmId, name: m.name, weight: m.weight, balance: 0, activated: m.activated ?? true }));
@@ -93,8 +99,38 @@ export class LocalClient implements ExpenseClient {
 		return members.map((m) => ({ ...m, balance: (paid.get(m.ihmId) ?? 0) - (share.get(m.ihmId) ?? 0) }));
 	}
 
+	/** Lazily materializes due copies of repeating bills (Cospend semantics:
+	 * the copy inherits the rule, the source stops repeating). */
 	async fetchBills(): Promise<IhmBill[]> {
-		return (await this.load()).bills.map(toIhmBill);
+		const data = await this.load();
+		const today = new Date().toISOString().slice(0, 10);
+		let created = false;
+		for (const source of data.bills.filter((b) => b.repeat && b.repeat.repeat !== 'n')) {
+			let current = source;
+			for (;;) {
+				const rule = current.repeat!;
+				const next = nextRepeatDate(current.date, rule.repeat, rule.repeatFreq);
+				if (next > today) break;
+				if (rule.repeatUntil && next > rule.repeatUntil) {
+					current.repeat = { ...rule, repeat: 'n' };
+					break;
+				}
+				const activeIds = data.members.filter((m) => m.activated !== false).map((m) => m.ihmId);
+				const copy: LocalBillEntry = {
+					...current,
+					ihmId: data.nextBillId++,
+					date: next,
+					owerIhmIds: rule.repeatAllActive ? activeIds : [...current.owerIhmIds],
+					repeat: { ...rule },
+				};
+				current.repeat = { ...rule, repeat: 'n' };
+				data.bills.push(copy);
+				created = true;
+				current = copy;
+			}
+		}
+		if (created) await this.save(data);
+		return data.bills.map(toIhmBill);
 	}
 
 	async createBill(bill: IhmBillCreate): Promise<number> {
@@ -163,6 +199,7 @@ function toEntry(ihmId: number, bill: IhmBillCreate): LocalBillEntry {
 		amount: bill.amount,
 		date: bill.date,
 		billType: bill.billType ?? 'expense',
+		...(bill.repeatSettings ? { repeat: bill.repeatSettings } : {}),
 	};
 }
 
@@ -175,5 +212,6 @@ function toIhmBill(b: LocalBillEntry): IhmBill {
 		amount: b.amount,
 		date: b.date,
 		billType: b.billType,
+		repeatSettings: b.repeat ?? { repeat: 'n', repeatFreq: 1, repeatUntil: null, repeatAllActive: false },
 	};
 }

@@ -32,3 +32,11 @@ export const COSPEND_GLOBAL_CATEGORIES: CospendCategory[] = [
 export function cospendIdToLocalCategoryId(cospendId: number): string | null {
 	return DEFAULT_CATEGORIES.find((c) => c.nativeCategoryId === cospendId)?.id ?? null;
 }
+
+/** Deterministic "#rrggbb" per category id — cosmetic for the servers' own
+ * web UIs when the plugin creates a category there. */
+export function categoryColor(seed: string): string {
+	let hash = 0;
+	for (let i = 0; i < seed.length; i++) hash = (hash * 31 + seed.charCodeAt(i)) >>> 0;
+	return `#${(hash & 0xffffff).toString(16).padStart(6, '0')}`;
+}

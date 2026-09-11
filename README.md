@@ -18,7 +18,8 @@ Obsidian (Obsidian Sync, iCloud, Syncthing, Git, ...). No account, no extra serv
 
 - **Bills** — list, create, edit, delete bills against any IHateMoney project (or a
   self-hosted [Nextcloud Cospend](https://apps.nextcloud.com/apps/cospend) project, or a fully
-  local vault-only project with no server at all)
+  local vault-only project with no server at all); payment methods and repeating bills where
+  the backend supports them (Cospend, the server fork, local projects)
 - **Auto-categorization** — classifies bills from their title, learns from your corrections,
   fully custom categories (label + emoji) per project. The built-in keyword list is tuned for
   German-speaking households (shop names) plus generic English terms; training from your own
@@ -59,18 +60,17 @@ Install via Obsidian Community Plugins, or manually:
 Categories are inferred automatically from bill titles; correcting one trains the classifier for
 next time. Nothing here is sent anywhere except your configured backend.
 
-## Server fork (optional)
+## Server fork (optional): categories, payment methods, repeating bills on the server
 
-IHateMoney's stock server has no native category field at all — this plugin's vault-file sync
-(above) works fully without it. If you self-host IHateMoney, there's an optional server patch
-that adds a native `categoryid` field, wire-compatible with what MoneyBuster/Cospend clients
-already send: your category then also shows up in IHateMoney's own web UI and in other IHM
-clients, not just this plugin.
+Stock IHateMoney has none of these — this plugin's vault-file category sync works fully without
+them. If you self-host, the fork
+[modularidea/ihatemoney-cat](https://github.com/modularidea/ihatemoney-cat/tree/feat/categoryid)
+adds them to the server, wire-compatible with Cospend/MoneyBuster: categories set by one user
+show up (and train the classifier) for everyone, payment methods and repeat rules become
+available in the bill form, and the IHM web UI gets a page to manage categories and payment
+methods. The plugin detects the fork automatically after the first sync.
 
-See [`server-patch/`](server-patch/) for the patch, a Dockerfile, and full verification notes.
-An applied branch (patched against a pinned upstream commit, full upstream test suite still
-green) is published at
-[modularidea/ihatemoney-cat, branch `feat/categoryid`](https://github.com/modularidea/ihatemoney-cat/tree/feat/categoryid).
+See [`server-patch/`](server-patch/) for a Dockerfile and what exactly the plugin uses.
 
 ## Development
 

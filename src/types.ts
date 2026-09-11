@@ -2,6 +2,19 @@
 
 export type IhmBillType = 'expense' | 'reimbursement';
 
+/** Cospend repeat codes: none, daily, weekly, bi-weekly, semi-monthly,
+ * monthly, yearly. Same wire values on the IHM fork. */
+export type BillRepeat = 'n' | 'd' | 'w' | 'b' | 's' | 'm' | 'y';
+
+export interface BillRepeatSettings {
+	repeat: BillRepeat;
+	repeatFreq: number;
+	repeatUntil: string | null; // yyyy-mm-dd
+	repeatAllActive: boolean;
+}
+
+export const NO_REPEAT: BillRepeatSettings = { repeat: 'n', repeatFreq: 1, repeatUntil: null, repeatAllActive: false };
+
 export interface IhmBill {
 	ihmId: number;
 	what: string;
@@ -18,8 +31,10 @@ export interface IhmBill {
 	 * built-in global categories). `null` = server has the field but the bill
 	 * is unclassified; `undefined` = server has no such field (stock IHM). */
 	nativeCategoryId?: number | null;
-	/** Cospend only — id from the project's own payment-mode set. */
+	/** Project-owned payment mode (Cospend, IHM fork). */
 	paymentModeId?: number;
+	/** Only where the backend supports repetition (feature "repeat"). */
+	repeatSettings?: BillRepeatSettings;
 }
 
 export interface BillCategoryDef {
@@ -75,6 +90,10 @@ export interface IhmProjectConfig {
 	/** Server exposes a native category field. Detected from fetched bills in
 	 * IhmView.sync(), or set explicitly for Cospend. */
 	nativeCategorySupport?: boolean;
+	/** Advertised server features (IHM fork `features`, Cospend: all), refreshed
+	 * on every sync. Drives which optional UI shows up (payment modes, repeat,
+	 * automatic category push). */
+	serverFeatures?: string[];
 	/** Cospend only — result of Nextcloud Login Flow v2 (an app password, never
 	 * the account password). */
 	cospendLoginName?: string;

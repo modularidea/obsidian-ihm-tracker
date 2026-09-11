@@ -22,9 +22,12 @@ services:
     volumes:
       - ihm-stock-db:/database
 
+  # Builds the fork from the sibling checkout (github.com/modularidea/
+  # ihatemoney-cat) so local changes are testable before pushing. Without a
+  # checkout use `context: ./server-patch` — that Dockerfile clones the branch.
   ihm-fork:
     build:
-      context: ./server-patch
+      context: ../../ihatemoney-cat
       dockerfile: Dockerfile
     environment:
       - DEBUG=False
