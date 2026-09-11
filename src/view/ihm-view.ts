@@ -8,6 +8,7 @@ import type { ExpenseClient, PaymentMode, ServerFeature } from '../backend/expen
 import { classify } from '../categorize/classifier';
 import { normalizeText } from '../categorize/text-match-utils';
 import { DEFAULT_CATEGORIES } from '../categorize/default-categories';
+import { COSPEND_GLOBAL_CATEGORIES } from '../categorize/cospend-category-map';
 import { categoryOf, isExpense, SettlementTransaction } from '../stats/aggregate';
 import { exportBillsPdf } from '../export/pdf-export';
 import { exportBillsExcel } from '../export/excel-export';
@@ -1132,6 +1133,46 @@ export class IhmView extends ItemView {
 		if (this.selectedProjectId === projectId) void this.sync(true);
 	}
 
+	/** A default category's canonical server form is Cospend's global id. A
+	 * same-named PROJECT category on the fork (created by an earlier push
+	 * while the local mapping was lost) is a duplicate: its bills are moved to
+	 * the global id and the server category is removed. */
+	private async foldDuplicateServerCategories(project: IhmProjectConfig, client: ExpenseClient, bills: IhmBill[], categoryData: ProjectCategoryData): Promise<ProjectCategoryData> {
+		if (project.backendType !== 'ihatemoney' || !this.features.has('categories') || !client.fetchNativeCategories || !client.deleteNativeCategory) return categoryData;
+		let catalog: { id: number; label: string; emoji: string }[];
+		try {
+			catalog = await client.fetchNativeCategories();
+		} catch {
+			return categoryData;
+		}
+		const folded: string[] = [];
+		for (const entry of catalog.filter((c) => c.id > 0)) {
+			const needle = entry.label.trim().toLowerCase();
+			const def = DEFAULT_CATEGORIES.find((d) => {
+				if (d.nativeCategoryId == null) return false;
+				const names = [d.label, categoryData.categories.find((c) => c.id === d.id)?.label, COSPEND_GLOBAL_CATEGORIES.find((g) => g.id === d.nativeCategoryId)?.label];
+				return names.some((n) => n?.trim().toLowerCase() === needle);
+			});
+			if (!def || def.nativeCategoryId == null) continue;
+			try {
+				for (const bill of bills.filter((b) => b.nativeCategoryId === entry.id)) {
+					await client.updateBill(bill.ihmId, { ...this.billPayload(bill), nativeCategoryId: def.nativeCategoryId });
+					bill.nativeCategoryId = def.nativeCategoryId;
+				}
+				await client.deleteNativeCategory(entry.id);
+				for (const c of categoryData.categories) if (c.nativeCategoryId === entry.id) c.nativeCategoryId = def.nativeCategoryId;
+				folded.push(entry.label);
+			} catch (e) {
+				console.error('ihm-tracker: could not fold duplicate server category', entry, e);
+			}
+		}
+		if (folded.length === 0) return categoryData;
+		const result = await this.plugin.categoryStore.mergeAndSave(project.id, categoryData, true);
+		if (result.diverged) this.notifySyncConflict();
+		new Notice(`Merged duplicate server categor${folded.length > 1 ? 'ies' : 'y'} into the built-in one: ${folded.join(', ')}`);
+		return result.data;
+	}
+
 	/** `silent`: no success notice (background sync). Errors always show. */
 	private async sync(silent = false): Promise<void> {
 		const project = this.currentProject();
@@ -1169,6 +1210,7 @@ export class IhmView extends ItemView {
 			if (settingsChanged) await this.plugin.saveSettings();
 
 			let categoryData = await this.plugin.categoryStore.load(project.id, project.backendType === 'ihatemoney');
+			categoryData = await this.foldDuplicateServerCategories(project, client, bills, categoryData);
 
 			// Native categories set by other clients (Cospend web, MoneyBuster)
 			// that no local category maps to yet: repair a known default's

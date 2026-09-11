@@ -29,6 +29,8 @@ export interface ExpenseClient {
 	/** Creates `cat` as a native project category and returns its id, or null
 	 * when unsupported/failed. Caller stores it in BillCategoryDef.nativeCategoryId. */
 	pushCategory?(cat: BillCategoryDef): Promise<number | null>;
+	/** Removes a project-owned native category (bills keep existing). */
+	deleteNativeCategory?(nativeId: number): Promise<void>;
 	/** Project payment modes. The bill form hides the field when empty. */
 	fetchPaymentModes?(): Promise<PaymentMode[]>;
 	/** Native category catalog (Cospend: project categories incl. its seeded

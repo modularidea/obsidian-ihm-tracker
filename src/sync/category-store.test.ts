@@ -30,7 +30,12 @@ describe('healDefaultMappings', () => {
 		expect(Object.keys(healed.deletedCategoryIds ?? {})).toEqual(['native--1']);
 	});
 
-	it('leaves a default that was deliberately remapped alone', () => {
+	it('resets a default that points at a server-side (positive) duplicate', () => {
+		const healed = healDefaultMappings(data({ categories: [{ id: 'groceries', label: 'Lebensmittel', emoji: '🛒', keywords: [], nativeCategoryId: 7 }] }));
+		expect(healed.categories[0]?.nativeCategoryId).toBe(-1);
+	});
+
+	it('leaves a default that was deliberately remapped to another global id alone', () => {
 		const healed = healDefaultMappings(data({ categories: [{ id: 'groceries', label: 'Lebensmittel', emoji: '🛒', keywords: [], nativeCategoryId: -10 }] }));
 		expect(healed.categories[0]?.nativeCategoryId).toBe(-10);
 	});

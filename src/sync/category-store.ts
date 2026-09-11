@@ -188,7 +188,9 @@ export function healDefaultMappings(data: ProjectCategoryData): ProjectCategoryD
 		if (def.nativeCategoryId == null) continue;
 		const local = categories.find((c) => c.id === def.id);
 		if (!local) continue;
-		if (local.nativeCategoryId == null) local.nativeCategoryId = def.nativeCategoryId;
+		// null = lost mapping; positive = a server-side duplicate created while
+		// the mapping was lost. A deliberate remap to another GLOBAL id stays.
+		if (local.nativeCategoryId == null || local.nativeCategoryId > 0) local.nativeCategoryId = def.nativeCategoryId;
 		const duplicate = categories.find((c) => c.id === `native-${def.nativeCategoryId}`);
 		if (duplicate && local.nativeCategoryId === def.nativeCategoryId) {
 			remap.set(duplicate.id, local.id);

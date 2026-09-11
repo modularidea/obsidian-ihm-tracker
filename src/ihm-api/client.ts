@@ -231,6 +231,13 @@ export class IhateMoneyClient implements ExpenseClient {
 		}
 	}
 
+	async deleteNativeCategory(nativeId: number): Promise<void> {
+		const res = await requestUrl({ url: this.url(`/categories/${nativeId}`), method: 'DELETE', headers: this.headers(), throw: false });
+		if (res.status !== 200 && res.status !== 404) throw new IhmApiError(res.status, res.text);
+		const info = await this.projectInfo();
+		if (info?.categories) info.categories = info.categories.filter((c) => c.id !== nativeId);
+	}
+
 	async fetchPaymentModes(): Promise<PaymentMode[]> {
 		return ((await this.projectInfo())?.paymentmodes ?? []).map((p) => ({ id: p.id, name: p.name, icon: p.icon ?? '' }));
 	}
