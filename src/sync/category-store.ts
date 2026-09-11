@@ -56,6 +56,15 @@ export class CategoryStore {
 			} else {
 				const raw = await this.app.vault.adapter.read(path);
 				data = this.normalizeLoaded(JSON.parse(raw) as Partial<ProjectCategoryData>, isForkCompatible);
+				if (isForkCompatible) {
+					// Self-heal old files (see healDefaultMappings) and persist right
+					// away so the duplicate disappears from disk, not only in memory.
+					const healed = healDefaultMappings(data);
+					if (JSON.stringify(healed) !== JSON.stringify(data)) {
+						data = healed;
+						await this.save(projectId, data);
+					}
+				}
 			}
 		} catch (e) {
 			console.error('ihm-tracker: could not read category store', path, e);
@@ -78,13 +87,14 @@ export class CategoryStore {
 		if (!categories.some((c) => c.id === OTHER_CATEGORY_ID)) {
 			categories.push({ id: OTHER_CATEGORY_ID, label: 'Other', emoji: '📦', keywords: [], nativeCategoryId: null });
 		}
-		return {
+		const data: ProjectCategoryData = {
 			schemaVersion: 1,
 			categories,
 			trainingDocs: Array.isArray(parsed.trainingDocs) ? parsed.trainingDocs : [],
 			billOverrides: parsed.billOverrides ?? {},
 			deletedCategoryIds,
 		};
+		return data;
 	}
 
 	/** Merges `local` (in-memory working state) with the current disk state and
@@ -163,4 +173,39 @@ function sanitizeNativeId(cat: BillCategoryDef, isForkCompatible: boolean): Bill
 		return { ...cat, nativeCategoryId: null };
 	}
 	return cat;
+}
+
+/** Fork/MoneyBuster projects: a default category that lost its global id
+ * (an older bug nulled them) gets it back, and an auto-imported duplicate
+ * (`native-<id>`, created while the mapping was missing) is folded into the
+ * default — overrides and training docs re-pointed, the duplicate
+ * tombstoned. Idempotent; persisted by the next mergeAndSave(). */
+export function healDefaultMappings(data: ProjectCategoryData): ProjectCategoryData {
+	const categories = data.categories.map((c) => ({ ...c }));
+	const deletedCategoryIds = { ...(data.deletedCategoryIds ?? {}) };
+	const remap = new Map<string, string>();
+	for (const def of DEFAULT_CATEGORIES) {
+		if (def.nativeCategoryId == null) continue;
+		const local = categories.find((c) => c.id === def.id);
+		if (!local) continue;
+		if (local.nativeCategoryId == null) local.nativeCategoryId = def.nativeCategoryId;
+		const duplicate = categories.find((c) => c.id === `native-${def.nativeCategoryId}`);
+		if (duplicate && local.nativeCategoryId === def.nativeCategoryId) {
+			remap.set(duplicate.id, local.id);
+			deletedCategoryIds[duplicate.id] = new Date().toISOString();
+		}
+	}
+	if (remap.size === 0) return { ...data, categories, deletedCategoryIds };
+	const billOverrides: ProjectCategoryData['billOverrides'] = {};
+	for (const [id, entry] of Object.entries(data.billOverrides)) {
+		billOverrides[id] = { ...entry, categoryId: remap.get(entry.categoryId) ?? entry.categoryId };
+	}
+	const trainingDocs = data.trainingDocs.map((d) => ({ ...d, categoryId: remap.get(d.categoryId) ?? d.categoryId }));
+	return {
+		schemaVersion: 1,
+		categories: categories.filter((c) => !remap.has(c.id)),
+		trainingDocs,
+		billOverrides,
+		deletedCategoryIds,
+	};
 }
