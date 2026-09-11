@@ -1264,6 +1264,10 @@ export class IhmView extends ItemView {
 				const key = normalizeText(text);
 				return [...categoryData.trainingDocs, ...learned].some((d) => d.categoryId === categoryId && normalizeText(d.text) === key);
 			};
+			// Bills with no override and no native match get a local guess below;
+			// those worth keeping are pushed to the server after the loop, so
+			// other clients (Cospend web, MoneyBuster) see them too.
+			const freshlyClassified: { bill: IhmBill; categoryId: string }[] = [];
 			for (const bill of bills) {
 				const override = categoryData.billOverrides[String(bill.ihmId)];
 				if (override && knownIds.has(override.categoryId)) {
@@ -1281,6 +1285,7 @@ export class IhmView extends ItemView {
 				bill.categoryId = classify(bill.what, categoryData.trainingDocs, categoryData.categories);
 				// Training docs may still point at a deleted category.
 				if (!knownIds.has(bill.categoryId)) bill.categoryId = OTHER_CATEGORY_ID;
+				if (isExpense(bill) && bill.categoryId !== OTHER_CATEGORY_ID) freshlyClassified.push({ bill, categoryId: bill.categoryId });
 			}
 			if (learned.length > 0) {
 				const result = await this.plugin.categoryStore.mergeAndSave(
@@ -1297,6 +1302,20 @@ export class IhmView extends ItemView {
 			this.categoryData = categoryData;
 			this.currency = currency;
 			this.paymentModes = paymentModes;
+
+			// Push newly auto-classified categories so the shared project (and
+			// other clients) reflect the guess too, not just this vault.
+			if (project.nativeCategorySupport) {
+				for (const { bill, categoryId } of freshlyClassified) {
+					try {
+						await this.persistCategoryChoice(bill, categoryId);
+						await this.pushNativeCategory(project, client, bill, categoryId);
+					} catch (e) {
+						console.error('ihm-tracker: could not push auto-classified category', bill.ihmId, e);
+					}
+				}
+			}
+
 			if (!silent && this.plugin.settings.showSyncNotifications) new Notice(`IHM Tracker: ${bills.length} bills loaded`);
 		} catch (e) {
 			console.error('ihm-tracker: sync failed', e);
