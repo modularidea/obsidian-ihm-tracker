@@ -134,6 +134,7 @@ describe.each([
 			expect(id).toBeNull();
 			return;
 		}
+		if (id == null) throw new Error('pushCategory returned null on the fork');
 		expect(id).toBeGreaterThan(0);
 		// same name → same id, no duplicate
 		const fresh = new IhateMoneyClient(serverUrl, projectId, password);
