@@ -1303,6 +1303,17 @@ export class IhmView extends ItemView {
 			this.currency = currency;
 			this.paymentModes = paymentModes;
 
+			// Show the list now — categoryId is already resolved locally (native
+			// match or classify() above). Pushing freshly-guessed categories to
+			// the server below is a write-back, not something the user needs to
+			// wait on; on a shared project there is almost always at least one
+			// bill someone else added since the last sync, so gating render()
+			// on this loop (as before) made every reopen pay for a sequential
+			// per-bill network round trip before showing anything.
+			this.loading = false;
+			this.render();
+			if (!silent && this.plugin.settings.showSyncNotifications) new Notice(`IHM Tracker: ${bills.length} bills loaded`);
+
 			// Push newly auto-classified categories so the shared project (and
 			// other clients) reflect the guess too, not just this vault.
 			if (project.nativeCategorySupport) {
@@ -1314,9 +1325,9 @@ export class IhmView extends ItemView {
 						console.error('ihm-tracker: could not push auto-classified category', bill.ihmId, e);
 					}
 				}
+				// Reflect confirmed server nativeCategoryId + any conflict merges.
+				this.render();
 			}
-
-			if (!silent && this.plugin.settings.showSyncNotifications) new Notice(`IHM Tracker: ${bills.length} bills loaded`);
 		} catch (e) {
 			console.error('ihm-tracker: sync failed', e);
 			new Notice(`IHM Tracker: sync failed — ${e instanceof Error ? e.message : String(e)}`);
