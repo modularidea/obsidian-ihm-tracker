@@ -66,6 +66,8 @@ export class IhmView extends ItemView {
 	private billSort: BillSort = 'date-desc';
 	private billGroupBy: BillGroupBy = 'none';
 	private filtersExpanded = false;
+	private searchQuery = '';
+	private searchExpanded = false;
 	private isWide = false;
 	private resizeObserver?: ResizeObserver;
 	private visualViewportHandler?: () => void;
@@ -82,6 +84,7 @@ export class IhmView extends ItemView {
 	/** Slide direction for the next render(), set by the triggering action. */
 	private pendingSlide: 'forward' | 'back' | null = null;
 	private pendingFilterOpen = false;
+	private pendingSearchOpen = false;
 
 	constructor(leaf: WorkspaceLeaf, plugin: IhmTrackerPlugin) {
 		super(leaf);
@@ -263,6 +266,18 @@ export class IhmView extends ItemView {
 
 		if (this.mainTab === 'bills') this.renderBalanceBar(header);
 
+		if (this.mainTab === 'bills' && this.searchExpanded && !this.exportPanelOpen) {
+			this.renderSearchPanel(header);
+			if (this.pendingSearchOpen) {
+				this.pendingSearchOpen = false;
+				const panel = header.querySelector<HTMLElement>('.ihm-search-panel-body');
+				if (panel) {
+					this.animateFilterPanelOpen(panel);
+					panel.querySelector('input')?.focus();
+				}
+			}
+		}
+
 		if (this.mainTab === 'bills' && this.filtersExpanded && !this.exportPanelOpen) {
 			this.renderFilterPanel(header);
 			if (this.pendingFilterOpen) {
@@ -343,6 +358,28 @@ export class IhmView extends ItemView {
 
 		const actions = row.createDiv({ cls: 'ihm-topbar-actions' });
 		if (this.mainTab === 'bills') {
+			const searchBtn = actions.createEl('button', {
+				cls: this.searchExpanded ? 'ihm-icon-btn is-active' : 'ihm-icon-btn',
+				attr: { 'aria-label': 'Search bills' },
+			});
+			setIcon(searchBtn, 'search');
+			if (this.searchQuery.trim()) searchBtn.createDiv({ cls: 'ihm-filter-dot' });
+			searchBtn.onclick = () => {
+				if (this.searchExpanded) {
+					const panel = root.querySelector<HTMLElement>('.ihm-search-panel-body');
+					if (panel) {
+						this.collapseFilterPanel(panel, () => {
+							this.searchExpanded = false;
+							this.searchQuery = '';
+							this.render();
+						});
+						return;
+					}
+				}
+				this.searchExpanded = !this.searchExpanded;
+				this.pendingSearchOpen = this.searchExpanded;
+				this.render();
+			};
 			const filterBtn = actions.createEl('button', {
 				cls: this.filtersExpanded ? 'ihm-icon-btn is-active' : 'ihm-icon-btn',
 				attr: { 'aria-label': 'Filter and sort' },
@@ -561,6 +598,8 @@ export class IhmView extends ItemView {
 		let bills = this.bills;
 		if (this.yearFilter) bills = bills.filter((b) => b.date.startsWith(this.yearFilter!));
 		if (this.categoryFilter) bills = bills.filter((b) => categoryOf(b) === this.categoryFilter);
+		const query = this.searchQuery.trim().toLowerCase();
+		if (query) bills = bills.filter((b) => b.what.toLowerCase().includes(query));
 		return bills;
 	}
 
@@ -569,10 +608,12 @@ export class IhmView extends ItemView {
 	}
 
 	private currentFilterSummary(): string {
-		return [
+		const parts = [
 			this.yearFilter ? `Year: ${this.yearFilter}` : 'All time',
 			this.categoryFilter ? `Category: ${this.categoryData?.categories.find((c) => c.id === this.categoryFilter)?.label}` : 'All categories',
-		].join(' · ');
+		];
+		if (this.searchQuery.trim()) parts.push(`Search: "${this.searchQuery.trim()}"`);
+		return parts.join(' · ');
 	}
 
 	/** `ihmId` tiebreak everywhere: server order is not stable across
@@ -662,23 +703,51 @@ export class IhmView extends ItemView {
 		this.renderBulkBar(scrollArea);
 
 		const list = scrollArea.createDiv({ cls: 'ihm-bill-list' });
+		this.renderBillListBody(list);
+
+		scrollArea.scrollTop = this.listScrollTop;
+		this.renderFab(pane);
+	}
+
+	/** Split out of `renderBillsListPane()` so the search input (`renderSearchPanel()`)
+	 * can refresh just the list on each keystroke without a full `render()` — that
+	 * would recreate the `<input>` and drop focus/caret mid-typing. */
+	private renderBillListBody(list: HTMLElement): void {
+		list.empty();
 		const sorted = this.sortBills(this.filteredBills());
 
 		if (sorted.length === 0) {
 			list.createEl('p', { text: 'No bills match this selection.' });
-		} else {
-			for (const group of this.groupBills(sorted)) {
-				if (this.billGroupBy !== 'none') {
-					const groupHeader = list.createDiv({ cls: 'ihm-bill-group-header' });
-					groupHeader.createSpan({ text: `${group.label} · ${group.bills.length}` });
-					groupHeader.createSpan({ text: formatCurrency(group.total, this.currency) });
-				}
-				for (const bill of group.bills) this.renderBillCard(list, bill);
-			}
+			return;
 		}
+		for (const group of this.groupBills(sorted)) {
+			if (this.billGroupBy !== 'none') {
+				const groupHeader = list.createDiv({ cls: 'ihm-bill-group-header' });
+				groupHeader.createSpan({ text: `${group.label} · ${group.bills.length}` });
+				groupHeader.createSpan({ text: formatCurrency(group.total, this.currency) });
+			}
+			for (const bill of group.bills) this.renderBillCard(list, bill);
+		}
+	}
 
-		scrollArea.scrollTop = this.listScrollTop;
-		this.renderFab(pane);
+	/** No-op if the list is not currently mounted (e.g. narrow layout with the
+	 * form open) — search just stays inert until the user navigates back. */
+	private refreshBillList(): void {
+		const list = this.contentEl.querySelector<HTMLElement>('.ihm-bill-list');
+		if (list) this.renderBillListBody(list);
+	}
+
+	private renderSearchPanel(pane: HTMLElement): void {
+		const panelBody = pane.createDiv({ cls: 'ihm-search-panel-body' });
+		const input = panelBody.createEl('input', {
+			cls: 'ihm-search-input',
+			attr: { type: 'search', placeholder: 'Search bill titles…', 'aria-label': 'Search bill titles' },
+		});
+		input.value = this.searchQuery;
+		input.oninput = () => {
+			this.searchQuery = input.value;
+			this.refreshBillList();
+		};
 	}
 
 	private renderFilterPanel(pane: HTMLElement): void {

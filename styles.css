@@ -179,6 +179,20 @@
 	font-weight: 600;
 }
 
+/* Search panel: same collapsible-box language as the filter panel below it
+   (reuses animateFilterPanelOpen()/collapseFilterPanel()), single full-width
+   input instead of a filter grid. */
+.ihm-search-panel-body {
+	margin: 0 var(--size-4-4, 16px) var(--size-4-3, 12px);
+	padding: var(--size-4-2, 8px);
+	background: var(--background-secondary);
+	border-radius: var(--radius-m, 8px);
+}
+
+.ihm-search-input {
+	width: 100%;
+}
+
 /* Filter panel: grid auto-fits as many 150px columns as fit. */
 .ihm-filter-panel-body {
 	display: grid;
